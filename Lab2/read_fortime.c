@@ -19,7 +19,7 @@
 #define FALSE 0
 #define TRUE 1
 
-#define BUF_SIZE 256
+#define BUF_SIZE 5
 #define FLAG 0x7E
 #define CONTROL 0x03
 #define ADDRESS 0x01
@@ -110,8 +110,7 @@ int main(int argc, char *argv[])
         printf(":%s:%d\n", buf, bytes);
 
         for (int i = 0; i < BUF_SIZE; i++)
-            printf("var = 0x%02X", buf[i]);
-        printf("\n");
+            printf("var = 0x%02X\n", buf[i]);
         // Set logic of connection establishement
         if (buf[2] == CONTROL) 
         {

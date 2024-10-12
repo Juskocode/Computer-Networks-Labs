@@ -53,7 +53,8 @@ struct Parameters par = {
     .tx2rxValid = NULL,
     .rx2tx = NULL,
     .rx2txValid = NULL,
-    .logfile = NULL};
+    .logfile = NULL
+};
 
 // Returns: serial port file descriptor (fd).
 int openSerialPort(const char *serialPort, struct termios *oldtio, struct termios *newtio)
@@ -80,15 +81,13 @@ int openSerialPort(const char *serialPort, struct termios *oldtio, struct termio
         return -1;
 
     return fd;
+
 }
-
-
 // Add noise to a buffer, by flipping the byte in the "errorIndex" position.
 void addNoiseToBuffer(unsigned char *buf, size_t errorIndex)
 {
     buf[errorIndex] ^= 0xFF;
 }
-
 
 // Initialize the ring buffers that implement the propagation delay
 // Returns 0 on success, -1 on failure
@@ -118,7 +117,6 @@ int init_ring_buffers(void)
     printf("PROPAGATION DELAY SET TO %ld usec (DESIRED = %lu usec)\n", actualPropDelay, par.propDelay);
     return 0;
 }
-
 
 // Set the byte delay corresponding to the selected baud rate
 void set_baud_rate(unsigned long baud)

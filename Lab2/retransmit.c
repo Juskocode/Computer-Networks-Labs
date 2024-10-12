@@ -32,13 +32,7 @@ volatile int STOP = FALSE;
 
 int fd;
 // Create string to send
-unsigned char buf[BUF_SIZE] = {
-    FLAG,
-    ADDRESS,
-    CONTROL,
-    ADDRESS ^ CONTROL, // BCC
-    FLAG
-};
+unsigned char buf[BUF_SIZE] = { 0 };
 
 void alarmHandler(int signal) {
 
@@ -125,6 +119,12 @@ int main(int argc, char *argv[])
     }
 
     printf("New termios structure set\n");
+    
+    buf[0] = 0x7E;  // flag
+    buf[1] = 0x03;  // addr
+    buf[2] = 0x03;  // control
+    buf[3] = buf[1] ^ buf[2];   // BCC
+    buf[4] = 0x7E;
 
     // set alarm function handler
     (void) signal(SIGALRM, alarmHandler);

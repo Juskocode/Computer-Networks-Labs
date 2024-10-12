@@ -11,8 +11,7 @@
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
-    if (openSerialPort(connectionParameters.serialPort,
-                       connectionParameters.baudRate) < 0)
+    if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0)
     {
         return -1;
     }
