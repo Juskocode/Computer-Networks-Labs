@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "serial_port.h": "c",
+        "link_layer.h": "c",
+        "stdlib.h": "c"
+    }
+}

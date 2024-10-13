@@ -3,6 +3,9 @@
 
 #ifndef _LINK_LAYER_H_
 #define _LINK_LAYER_H_
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
 
 typedef enum
 {
@@ -30,8 +33,10 @@ typedef struct
 #define FLAG (unsigned char)0x7e
 #define RX_ADDR (unsigned char)0x03
 #define TX_ADDR (unsigned char)0x07
-#define UA0 (unsigned char)0x07
+#define UA (unsigned char)0x07
 #define SET (unsigned char)0x03
+
+#define S_FRAME_LEN 5
 
 // Open a connection using the "port" parameters defined in struct linkLayer.
 // Return "1" on success or "-1" on error.
