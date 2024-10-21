@@ -94,7 +94,7 @@ int main(int argc, char *argv[])
 
     // Create string to send
 
-     unsigned char buf[BUF_SIZE] = {
+    unsigned char buf[BUF_SIZE] = {
         FLAG,
         ADDRESS,
         CONTROL,

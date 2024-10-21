@@ -1,5 +1,4 @@
 // Serial port interface implementation
-// DO NOT CHANGE THIS FILE
 
 #include "serial_port.h"
 

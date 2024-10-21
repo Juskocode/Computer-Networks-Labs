@@ -19,7 +19,7 @@
 #define FALSE 0
 #define TRUE 1
 
-#define BUF_SIZE 256
+#define BUF_SIZE 5
 #define FLAG 0x7E
 #define CONTROL 0x03
 #define ADDRESS 0x01
