@@ -2,6 +2,7 @@
 
 #include "application_layer.h"
 #include "link_layer.h"
+#include "utils.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -53,45 +54,12 @@ int sendPacketData(size_t nBytes, unsigned char *data)
     return result;
 }
 
-unsigned char * itouchar(size_t value, unsigned char *size)
-{
-    if (size == NULL) return NULL; 
-    
-    size_t tmp_value = value;
-    size_t length = 0;
-    do {
-        length++;
-        tmp_value >>= 8;
-    } while (tmp_value);
-
-    unsigned char *bytes = malloc(length);
-    if (bytes == NULL) return NULL;
-    
-
-    for (size_t i = 0; i < length; i++, value >>= 8)
-        bytes[i] = value & 0xFF;
-
-    *size = length;
-    return bytes;
-}
-
-size_t uchartoi (unsigned char n, unsigned char * numbers)
-{
-    if(numbers == NULL) return 0;
-    size_t value = 0;
-    size_t power = 1;
-    for(int i = 0; i < n; i++, power <<= 8){
-        value += numbers[i] * power;
-    }
-    return value;
-}
-
 int sendPacketControl(unsigned char C, const char * filename, size_t file_size)
 {
     if(filename == NULL) return -1;
     
     unsigned char L1 = 0;
-    unsigned char * V1 = itouchar(file_size, &L1);
+    unsigned char * V1 = size_t_to_bytes(file_size, &L1);
     if(V1 == NULL) return -1;
 
     unsigned char L2 = (unsigned char) strlen(filename);
@@ -150,7 +118,7 @@ int readPacketControl(unsigned char * buff)
     unsigned char * V1 = malloc(L1);
     if(V1 == NULL) return -1;
     memcpy(V1, buff + indx, L1); indx += L1;
-    size_t file_size = uchartoi(L1, V1);
+    size_t file_size = bytes_to_size_t(L1, V1);
     free(V1);
 
     if(buff[indx++] != T_FILENAME) return -1;
