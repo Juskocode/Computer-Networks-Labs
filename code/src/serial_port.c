@@ -1,5 +1,5 @@
 // Serial port interface implementation
-
+/*
 #include "serial_port.h"
 
 #include <fcntl.h>
@@ -123,3 +123,4 @@ int writeBytes(const char *bytes, int numBytes)
 {
     return write(fd, bytes, numBytes);
 }
+*/
