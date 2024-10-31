@@ -4,6 +4,9 @@
 #ifndef _SERIAL_PORT_H_
 #define _SERIAL_PORT_H_
 
+extern int fd; // File descriptor for open serial port
+extern struct termios oldtio; // Serial port settings to restore on closing
+
 // Open and configure the serial port.
 // Returns -1 on error.
 int openSerialPort(const char *serialPort, int baudRate);

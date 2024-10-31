@@ -1,5 +1,5 @@
 // Serial port interface implementation
-/*
+
 #include "serial_port.h"
 
 #include <fcntl.h>
@@ -13,7 +13,7 @@
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
-int fd = -1; // File descriptor for open serial port
+int fd = -1;              // Global file descriptor for open serial port
 struct termios oldtio; // Serial port settings to restore on closing
 
 // Open and configure the serial port.
@@ -65,8 +65,8 @@ int openSerialPort(const char *serialPort, int baudRate)
 
     // Set input mode (non-canonical, no echo,...)
     newtio.c_lflag = 0;
-    newtio.c_cc[VTIME] = 0; // Block reading
-    newtio.c_cc[VMIN] = 1;  // Byte by byte
+    newtio.c_cc[VTIME] = 1; // Block reading
+    newtio.c_cc[VMIN] = 0;  // Byte by byte
 
     tcflush(fd, TCIOFLUSH);
 
@@ -123,4 +123,3 @@ int writeBytes(const char *bytes, int numBytes)
 {
     return write(fd, bytes, numBytes);
 }
-*/

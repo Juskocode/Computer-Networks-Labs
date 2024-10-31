@@ -278,8 +278,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         fclose(file);
     }
-
-
+    
     if (llclose(TRUE) == -1) {
         perror("Link layer error: Failed to close the connection.");
         return;

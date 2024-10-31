@@ -13,7 +13,7 @@
 #include <time.h>
 
 #include "link_layer.h"
-
+#include "serial_port.h"  // Include the serial port helper functions
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -70,92 +70,58 @@ enum state{
 
 LinkLayer connectionParameters;
 Statistics statistics = {0, 0, 0, 0, 0.0, 0.0};
-struct termios oldtio;
 int alarmEnabled = FALSE;
 int alarmCount = 0;
-int fd;
 unsigned char C_Ns = 0; // Ns
 unsigned char C_Nr = 0; // Nr (o valor que ele espera de receber)
 
-int get_boudrate(int boudrate){
-    switch (boudrate)
-    {
-    case 50 : return B50;
-    case 75: return B75;
-    case 110: return B110;
-    case 134: return B134;
-    case 150: return B150;
-    case 200: return B200;
-    case 300: return B300;
-    case 600: return B600;
-    case 1200: return B1200;
-    case 1800: return B1800;
-    case 2400: return B2400;
-    case 4800: return B4800;
-    case 9600: return B9600;
-    case 19200: return B19200;
-    case 38400: return B38400;
-    default: return B9600;
-    }
-}
-
+// Retrieves the current time difference in seconds
 double get_time_difference(struct timeval ti, struct timeval tf) {
     return (tf.tv_sec - ti.tv_sec) + (tf.tv_usec - ti.tv_usec) / 1e6;
 }
 
-int connectFD(LinkLayer connectionParametersApp)
-{
+// Opens the serial port and configures it using the openSerialPort function
+int connectFD(LinkLayer connectionParametersApp) {
     if (connectionParametersApp.serialPort[0] == '\0') return -1;
-    
-    fd = open(connectionParametersApp.serialPort, O_RDWR | O_NOCTTY);
-    if (fd < 0)
-    {
-        perror(connectionParametersApp.serialPort);
+
+    // Use the openSerialPort function from serial_port.c
+    fd = openSerialPort(connectionParametersApp.serialPort, connectionParametersApp.baudRate);
+    if (fd < 0) {
+        fprintf(stderr, "Failed to open serial port %s\n", connectionParametersApp.serialPort);
         return -1;
     }
 
-    struct termios newtio;
-
-    // Save current port settings
-    if (tcgetattr(fd, &oldtio) == -1)
-    {
-        perror("tcgetattr");
-        return -1;
-    }
-
-    // Clear struct for new port settings
-    memset(&newtio, 0, sizeof(newtio));
-
-    newtio.c_cflag = (get_boudrate(connectionParametersApp.baudRate)) | CS8 | CLOCAL | CREAD;
-    newtio.c_iflag = IGNPAR;
-    newtio.c_oflag = 0;
-
-    newtio.c_lflag = 0;
-
-    newtio.c_cc[VTIME] = 10 * connectionParameters.timeout;
-    newtio.c_cc[VMIN] = 0;
-
-    tcflush(fd, TCIOFLUSH);
-
-    if (tcsetattr(fd, TCSANOW, &newtio) == -1)
-    {
-        perror("tcsetattr");
-        return -1;
-    }
-
-    printf("New termios structure set\n");
-
+    printf("Serial port connection established\n");
     return 0;
 }
 
-int disconnectFD()
-{
-    if (tcsetattr(fd, TCSANOW, &oldtio) == -1)
-    {
-        perror("tcsetattr");
+// Closes the serial port using the closeSerialPort function
+int disconnectFD() {
+    // Use the closeSerialPort function from serial_port.c
+    if (closeSerialPort() == -1) {
+        perror("Failed to restore serial port settings");
         return -1;
     }
+    printf("Serial port disconnected\n");
     return 0;
+}
+
+// Reads a byte from the serial port using the readByte function
+int readByteFromPort(char *byte) {
+    int result = readByte(byte);
+    if (result == -1) {
+        perror("Error reading byte from serial port");
+    }
+    return result;
+}
+
+// Writes bytes to the serial port using the writeBytes function
+int writeBytesToPort(const char *bytes, int numBytes) {
+    int result = writeBytes(bytes, numBytes);
+    if (result == -1) {
+        perror("Error writing bytes to serial port");
+    }
+    return result;
 }
 
 void alarmHandler(int signal)
@@ -237,7 +203,10 @@ int receivePacketRetransmission(unsigned char A_EXPECTED, unsigned char C_EXPECT
     enum state enum_state = START;
     (void)signal(SIGALRM, alarmHandler);
     if(send_packet_command(A_TO_SEND, C_TO_SEND)) return -1;
-    alarm(connectionParameters.timeout); 
+    alarm(connectionParameters.timeout);
+    printf("Alarm count: alarmCount is %d\n", alarmCount);
+    printf("Connection retansmissions:  %d\n", connectionParameters.nRetransmissions);
+
     while (enum_state != STOP && alarmCount <= connectionParameters.nRetransmissions)
     {
         unsigned char byte = 0;
@@ -313,6 +282,7 @@ int llopen(LinkLayer connectionParametersApp)
         gettimeofday(&temp_start, NULL);
 
         if(receivePacketRetransmission(A_SEND, C_UA, A_SEND, C_SET)) return -1;
+        printf("receive transmission with sucess!\n");
 
         statistics.nFrames++;
 
