@@ -22,17 +22,24 @@
 #define TRUE 1
 
 #define FRAME_SIZE 5
+/*[F][A][C][BCC1][BCC2]*/
 
+/*FLAGS*/
 #define FLAG        0x7E
 #define ESC         0x7D
 #define ESC_FLAG    0x5E
 #define ESC_ESC     0x5D
+
+/*Adress Field*/
 #define A_SEND      0x03
 #define A_RECV      0x01
+
+/*Control Field*/
 #define C_SET       0x03
 #define C_UA        0x07
 #define C_DISC      0x0B
 
+/*Information Field*/
 #define C_INF0      0x00
 #define C_INF1      0x40
 
