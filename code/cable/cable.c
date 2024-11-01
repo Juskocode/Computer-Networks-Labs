@@ -27,7 +27,7 @@
 #define FALSE 0
 #define TRUE 1
 
-#define BUF_SIZE 2048
+#define BUF_SIZE 4096
 
 // Current running parameters
 struct Parameters {
