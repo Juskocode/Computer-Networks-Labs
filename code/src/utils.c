@@ -35,3 +35,8 @@ size_t bytes_to_size_t(unsigned char n, const unsigned char *bytes) {
     }
     return value;
 }
+
+// Retrieves the current time difference in seconds
+double get_time_difference(struct timeval ti, struct timeval tf) {
+    return (tf.tv_sec - ti.tv_sec) + (tf.tv_usec - ti.tv_usec) / 1e6;
+}

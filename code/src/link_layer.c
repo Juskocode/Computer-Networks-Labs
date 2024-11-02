@@ -9,12 +9,10 @@
 #include <termios.h>
 #include <unistd.h>
 #include <signal.h>
-#include <sys/time.h>
-#include <time.h>
 
 #include "link_layer.h"
 #include "serial_port.h"  // Include the serial port helper functions
-
+#include "utils.h"
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -56,17 +54,6 @@
 #define TPROP           0               // ms
 #define FILE_SIZE       10968
 
-typedef struct
-{
-    size_t bytes_read;          // Number of bytes read before any destuffing
-    unsigned int nFrames;       // Number of good frames sent/received
-    unsigned int errorFrames;
-    unsigned int frames_size;   // Size of good frames sent
-    double time_send_control;   // Time spent on sending control frames
-    double time_send_data;      // Time spent on sending data frames
-    struct timeval start;       // When program starts
-} Statistics;
-
 /* Enum to represent communication states */
 enum CommState {
     STATE_START, 
@@ -85,11 +72,6 @@ int alarmRetryCount = 0;                   // Counts the number of alarm retries
 
 unsigned char sendSeqNum = 0;              // Send sequence number (Ns)
 unsigned char recvSeqNum = 0;              // Receive sequence number (Nr)
-
-// Retrieves the current time difference in seconds
-double get_time_difference(struct timeval ti, struct timeval tf) {
-    return (tf.tv_sec - ti.tv_sec) + (tf.tv_usec - ti.tv_usec) / 1e6;
-}
 
 // Opens the serial port and configures it using the openSerialPort function
 int connectFD(LinkLayer connectionParametersApp) {
