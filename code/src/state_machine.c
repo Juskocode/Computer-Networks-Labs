@@ -27,3 +27,4 @@ enum CommState processByte(enum CommState currentState, unsigned char byte,
     }
     return currentState;
 }
+

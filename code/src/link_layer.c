@@ -223,27 +223,37 @@ int llopen(LinkLayer connectionParamsAppLayer) {
 
 /* Function for byte stuffing */
 const unsigned char * performByteStuffing(const unsigned char *buffer, int bufSize, int *newSize) {
-    if(buffer == NULL || newSize == NULL) return NULL;
+    if (buffer == NULL || newSize == NULL) return NULL;
 
-    unsigned char *result = (unsigned char *) malloc(bufSize * 2 + 1);
-    if(result == NULL) return NULL;
+    // Allocate buffer with exact size needed, using an overestimated max size.
+    unsigned char *result = (unsigned char *) malloc(bufSize * 2); // Avoid +1 as bufSize * 2 already covers escape cases
+    if (result == NULL) return NULL;
+
     size_t j = 0;
 
-    for(size_t i = 0; i < bufSize; i++, j++) {
-        if(buffer[i] == FRAME_FLAG) {
+    // Process each byte in buffer
+    for (size_t i = 0; i < bufSize; ++i) {
+        if (buffer[i] == FRAME_FLAG) {
             result[j++] = FRAME_ESCAPE;
-            result[j] = FRAME_ESCAPED_FLAG;
-        }
-        else if (buffer[i] == FRAME_ESCAPE) {
+            result[j++] = FRAME_ESCAPED_FLAG;
+        } else if (buffer[i] == FRAME_ESCAPE) {
             result[j++] = FRAME_ESCAPE;
-            result[j] = FRAME_ESCAPED_ESCAPE;
+            result[j++] = FRAME_ESCAPED_ESCAPE;
+        } else {
+            result[j++] = buffer[i];
         }
-        else
-            result[j] = buffer[i];
     }
 
-    *newSize = (int) j;
-    result = realloc(result, j);
+    *newSize = (int)j;
+
+    // Resize only if there's a difference between used size and allocated size
+    if (j < bufSize * 2) {
+        unsigned char *shrunkResult = realloc(result, j);
+        if (shrunkResult != NULL) {
+            result = shrunkResult; // Only update result if realloc was successful
+        }
+    }
+
     return result;
 }
 
@@ -266,7 +276,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
     frame[1] = ADDR_SENDER;
     frame[2] = (sendSeqNum) ? INFO_CTRL_1 : INFO_CTRL_0;
     frame[3] = frame[1] ^ frame[2];
-    
+
     memcpy(frame + FRAME_SIZE - 1, stuffedBuffer, stuffedSize);
 
     unsigned char bcc2 = 0x00;
@@ -380,29 +390,39 @@ int llwrite(const unsigned char *buffer, int bufSize) {
 
 /* Function to perform byte destuffing */
 int byteDestuffing(unsigned char *buffer, int bufferSize, int *processedSize, unsigned char *bcc2Received) {
-    if (buffer == NULL || processedSize == NULL) return -1;
-    if (bufferSize < 1) return 0;
+    if (buffer == NULL || processedSize == NULL || bufferSize < 1) return -1;
 
-    unsigned char *readPtr = buffer;  // Pointer to read from buffer
-    unsigned char *writePtr = buffer; // Pointer to write in-place to buffer
+    unsigned char *writePtr = buffer;  // Pointer to write in-place to buffer
+    unsigned char *readPtr = buffer;   // Pointer to read from buffer
+    unsigned char *endPtr = buffer + bufferSize; // Pointer to end of buffer
 
-    while (readPtr < buffer + bufferSize) {
+    while (readPtr < endPtr) {
         if (*readPtr != FRAME_ESCAPE) {
             *writePtr++ = *readPtr++;
-        } else {
-            if (*(readPtr + 1) == FRAME_ESCAPED_FLAG) {
+        } else if (readPtr + 1 < endPtr) {  // Check we don't go out of bounds
+            ++readPtr;
+            if (*readPtr == FRAME_ESCAPED_FLAG) {
                 *writePtr++ = FRAME_FLAG;
-            } else if (*(readPtr + 1) == FRAME_ESCAPED_ESCAPE) {
+            } else if (*readPtr == FRAME_ESCAPED_ESCAPE) {
                 *writePtr++ = FRAME_ESCAPE;
+            } else {
+                *writePtr++ = FRAME_ESCAPE; // If invalid escape, copy escape as is
+                *writePtr++ = *readPtr; // Copy the following byte
             }
-            readPtr += 2;
+            ++readPtr;
+        } else { // Handle edge case if FRAME_ESCAPE is last byte
+            *writePtr++ = FRAME_ESCAPE;
+            break;
         }
     }
 
+    // Update BCC2 and processed size, assuming the last byte is the BCC2 value
     *bcc2Received = *(writePtr - 1);
-    *processedSize = writePtr - buffer - 1;
+    *processedSize = (int)(writePtr - buffer - 1);
+
     return 0;
 }
+
 
 /* Function to read data from the link layer */
 int llread(unsigned char *packet) {
@@ -497,7 +517,7 @@ int llread(unsigned char *packet) {
                     if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
                         recvSeqNum = 1 - recvSeqNum;
                         printf("Bytes received: %d\n", processedSize);
-                        stats.bytes_read += processedSize + 6;
+                        stats.bytes_read += processedSize + FRAME_SIZE + 1;
                         stats.nFrames++;
                         return processedSize;
                     }
