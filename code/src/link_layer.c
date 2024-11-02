@@ -2,58 +2,14 @@
 
 #include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <termios.h>
-#include <unistd.h>
-#include <signal.h>
 
 #include "link_layer.h"
 #include "serial_port.h"  // Include the serial port helper functions
 #include "utils.h"
 #include "state_machine.h"
-// MISC
-#define _POSIX_SOURCE 1 // POSIX compliant source
-
-#define TRUE 1
-#define FALSE 0
-
-#define FRAME_SIZE 5
-
-/*[F][A][C][BCC1][BCC2]*/
-
-/* Frame Boundary Flags */
-#define FRAME_FLAG             0x7E
-#define FRAME_ESCAPE           0x7D
-#define FRAME_ESCAPED_FLAG     0x5E
-#define FRAME_ESCAPED_ESCAPE   0x5D
-
-/* Address Field Identifiers */
-#define ADDR_SENDER            0x03
-#define ADDR_RECEIVER          0x01
-
-/* Control Field Commands */
-#define CTRL_SET               0x03
-#define CTRL_UA                0x07
-#define CTRL_DISCONNECT        0x0B
-
-/* Information Field Identifiers */
-#define INFO_CTRL_0            0x00
-#define INFO_CTRL_1            0x40
-
-/*ACK's and NACK's*/
-#define RR0                    0xAA
-#define RR1                    0xAB
-#define REJ0                   0x54
-#define REJ1                   0x55
-
-// NOTE: only for report stats
-#define FAKE_BCC1_ERR   0.0             // %
-#define FAKE_BCC2_ERR   0.0             // %
-#define TPROP           0               // ms
-#define FILE_SIZE       10968
 
 LinkLayer connectionParameters;
 Statistics stats = {0, 0, 0, 0, 0.0, 0.0}; // Holds frame count, byte count, and timing data
@@ -64,7 +20,7 @@ unsigned char sendSeqNum = 0;              // Send sequence number (Ns)
 unsigned char recvSeqNum = 0;              // Receive sequence number (Nr)
 
 // Opens the serial port and configures it using the openSerialPort function
-int connectFD(LinkLayer connectionParametersApp) {
+int establishSerialConnection(LinkLayer connectionParametersApp) {
     if (connectionParametersApp.serialPort[0] == '\0') return -1;
 
     // Use the openSerialPort function from serial_port.c
@@ -79,7 +35,7 @@ int connectFD(LinkLayer connectionParametersApp) {
 }
 
 // Closes the serial port using the closeSerialPort function
-int disconnectFD() {
+int terminateSerialConnection() {
     // Use the closeSerialPort function from serial_port.c
     if (closeSerialPort() == -1) {
         perror("Failed to restore serial port settings");
@@ -157,7 +113,7 @@ int receivePacketWithRetransmission(unsigned char expectedAddress, unsigned char
     (void)signal(SIGALRM, alarmHandler);
     if(sendCommandPacket(sendAddress, sendControl)) return -1;
     alarm(connectionParameters.timeout);
-    
+
     while (currentState != STATE_STOP && alarmRetryCount <= connectionParameters.nRetransmissions) {
         unsigned char byte = 0;
         int bytesRead;
@@ -192,7 +148,7 @@ int llopen(LinkLayer connectionParamsAppLayer) {
     gettimeofday(&stats.start, NULL);
     memcpy(&connectionParameters, &connectionParamsAppLayer, sizeof(connectionParamsAppLayer));
 
-    if (connectFD(connectionParamsAppLayer) == -1)
+    if (establishSerialConnection(connectionParamsAppLayer) == -1)
         return -1;
 
     if(connectionParamsAppLayer.role == LlTx) {
@@ -216,77 +172,6 @@ int llopen(LinkLayer connectionParamsAppLayer) {
         if(sendCommandPacket(ADDR_SENDER, CTRL_UA)) return -1;
         printf("Connection established\n");
     }
-    return 0;
-}
-
-/* Function for byte stuffing */
-const unsigned char * byteStuffing(const unsigned char *buffer, int bufSize, int *newSize) {
-    if (buffer == NULL || newSize == NULL) return NULL;
-
-    // Allocate buffer with exact size needed, using an overestimated max size.
-    unsigned char *result = (unsigned char *) malloc(bufSize * 2); // Avoid +1 as bufSize * 2 already covers escape cases
-    if (result == NULL) return NULL;
-
-    size_t j = 0;
-
-    // Process each byte in buffer
-    for (size_t i = 0; i < bufSize; ++i) {
-        if (buffer[i] == FRAME_FLAG) {
-            result[j++] = FRAME_ESCAPE;
-            result[j++] = FRAME_ESCAPED_FLAG;
-        } else if (buffer[i] == FRAME_ESCAPE) {
-            result[j++] = FRAME_ESCAPE;
-            result[j++] = FRAME_ESCAPED_ESCAPE;
-        } else {
-            result[j++] = buffer[i];
-        }
-    }
-
-    *newSize = (int)j;
-
-    // Resize only if there's a difference between used size and allocated size
-    if (j < bufSize * 2) {
-        unsigned char *shrunkResult = realloc(result, j);
-        if (shrunkResult != NULL) {
-            result = shrunkResult; // Only update result if realloc was successful
-        }
-    }
-
-    return result;
-}
-
-/* Function to perform byte destuffing */
-int byteDestuffing(unsigned char *buffer, int bufferSize, int *processedSize, unsigned char *bcc2Received) {
-    if (buffer == NULL || processedSize == NULL || bufferSize < 1) return -1;
-
-    unsigned char *writePtr = buffer;  // Pointer to write in-place to buffer
-    unsigned char *readPtr = buffer;   // Pointer to read from buffer
-    unsigned char *endPtr = buffer + bufferSize; // Pointer to end of buffer
-
-    while (readPtr < endPtr) {
-        if (*readPtr != FRAME_ESCAPE) {
-            *writePtr++ = *readPtr++;
-        } else if (readPtr + 1 < endPtr) {  // Check we don't go out of bounds
-            ++readPtr;
-            if (*readPtr == FRAME_ESCAPED_FLAG) {
-                *writePtr++ = FRAME_FLAG;
-            } else if (*readPtr == FRAME_ESCAPED_ESCAPE) {
-                *writePtr++ = FRAME_ESCAPE;
-            } else {
-                *writePtr++ = FRAME_ESCAPE; // If invalid escape, copy escape as is
-                *writePtr++ = *readPtr; // Copy the following byte
-            }
-            ++readPtr;
-        } else { // Handle edge case if FRAME_ESCAPE is last byte
-            *writePtr++ = FRAME_ESCAPE;
-            break;
-        }
-    }
-
-    // Update BCC2 and processed size, assuming the last byte is the BCC2 value
-    *bcc2Received = *(writePtr - 1);
-    *processedSize = (int)(writePtr - buffer - 1);
-
     return 0;
 }
 
@@ -589,7 +474,7 @@ int llclose(int showStatistics)
         gettimeofday(&temp_start, NULL);
 
         if(receivePacketWithRetransmission(ADDR_RECEIVER, CTRL_DISCONNECT, ADDR_SENDER, CTRL_DISCONNECT))
-            return disconnectFD();
+            return terminateSerialConnection();
 
         stats.nFrames++;
         gettimeofday(&temp_end, NULL);
@@ -597,18 +482,18 @@ int llclose(int showStatistics)
         stats.time_send_control += get_time_difference(temp_start, temp_end);
         stats.nFrames++;
 
-        if(sendCommandPacket(ADDR_RECEIVER, CTRL_UA)) return disconnectFD();
+        if(sendCommandPacket(ADDR_RECEIVER, CTRL_UA)) return terminateSerialConnection();
         printf("Disconnected\n");
     }
     if(connectionParameters.role == LlRx)
     {
         if(receivePacket(ADDR_SENDER, CTRL_DISCONNECT)) 
-            return disconnectFD();
+            return terminateSerialConnection();
         stats.bytes_read += FRAME_SIZE;
         stats.nFrames++;
 
         if(receivePacketWithRetransmission(ADDR_RECEIVER, CTRL_UA, ADDR_RECEIVER, CTRL_DISCONNECT)) 
-            return disconnectFD();
+            return terminateSerialConnection();
         stats.bytes_read += FRAME_SIZE;
         stats.nFrames++;
 
@@ -616,5 +501,5 @@ int llclose(int showStatistics)
     }
 
     if(showStatistics) printStatistics();
-    return disconnectFD();
+    return terminateSerialConnection();
 }

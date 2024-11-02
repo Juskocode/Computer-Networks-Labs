@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
+#include "macros.h"
 
 /*Statistics struct data representation*/
 typedef struct
@@ -27,6 +28,46 @@ typedef struct
     double time_send_data;      // Time spent on sending data frames
     struct timeval start;       // When program starts
 } Statistics;
+
+/**
+ * @brief Perform byte stuffing on the input buffer.
+ * 
+ * This function takes an input buffer and applies byte stuffing by replacing specific 
+ * control characters (like FRAME_FLAG and FRAME_ESCAPE) with escape sequences. This 
+ * allows the transmitted data to include special bytes without being misinterpreted by 
+ * the receiving end as control flags.
+ *
+ * @param buffer The input buffer containing the original data to be stuffed.
+ * @param bufSize The size of the input buffer.
+ * @param newSize Pointer to an integer where the function will store the size of 
+ *                the stuffed data in bytes.
+ * 
+ * @return A pointer to the newly allocated buffer containing the stuffed data, or 
+ *         NULL if there is an error. The caller is responsible for freeing the 
+ *         returned buffer.
+ */
+const unsigned char * byteStuffing(const unsigned char *buffer, int bufSize, int *newSize);
+
+
+/**
+ * @brief Perform byte destuffing on a stuffed input buffer.
+ * 
+ * This function removes byte stuffing from a buffer, restoring the original data by 
+ * interpreting escape sequences and control flags. It writes the destuffed data back 
+ * in-place and calculates the BCC (Block Check Character) of the received data.
+ *
+ * @param buffer The input buffer containing stuffed data. The destuffed data will be 
+ *               written back to this buffer.
+ * @param bufferSize The size of the input buffer in bytes.
+ * @param processedSize Pointer to an integer where the function will store the size 
+ *                      of the destuffed data in bytes.
+ * @param bcc2Received Pointer to an unsigned char where the function will store the 
+ *                     BCC2 (error-checking code) calculated from the destuffed data.
+ * 
+ * @return Returns 0 on success, or -1 on error.
+ */
+int byteDestuffing(unsigned char *buffer, int bufferSize, int *processedSize, unsigned char *bcc2Received);
+
 
 /**
  * @brief Converts a `size_t` integer to a byte array representation.

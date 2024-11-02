@@ -7,7 +7,6 @@
 
 #include "application_layer.h"
 
-// #define BAURATE 9600 default value uncommnent to use
 #define N_TRIES 3
 #define TIMEOUT 4
 
