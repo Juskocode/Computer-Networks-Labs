@@ -266,6 +266,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
     frame[1] = ADDR_SENDER;
     frame[2] = (sendSeqNum) ? INFO_CTRL_1 : INFO_CTRL_0;
     frame[3] = frame[1] ^ frame[2];
+    
     memcpy(frame + FRAME_SIZE - 1, stuffedBuffer, stuffedSize);
 
     unsigned char bcc2 = 0x00;
