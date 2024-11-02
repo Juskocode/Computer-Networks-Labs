@@ -33,7 +33,7 @@
 #define REJ0                   0x54
 #define REJ1                   0x55
 
-// NOTE: only for report stats
+/*PrintStatists macros*/
 #define FAKE_BCC1_ERR   0.0             // %
 #define FAKE_BCC2_ERR   0.0             // %
 #define TPROP           0               // ms
