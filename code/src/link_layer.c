@@ -18,8 +18,8 @@
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
-#define FALSE 0
 #define TRUE 1
+#define FALSE 0
 
 #define FRAME_SIZE 5
 
@@ -43,7 +43,6 @@
 /* Information Field Identifiers */
 #define INFO_CTRL_0            0x00
 #define INFO_CTRL_1            0x40
-
 
 /*ACK's and NACK's*/
 #define RR0         0xAA
@@ -498,7 +497,6 @@ int llread(unsigned char *packet) {
             perror("Error reading DISC command");
             return -1;
         }
-
         if (bytesRead > 0) {
             switch (currentState) {
             case STATE_START:
