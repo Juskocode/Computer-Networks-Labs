@@ -222,7 +222,7 @@ int llopen(LinkLayer connectionParamsAppLayer) {
 }
 
 /* Function for byte stuffing */
-const unsigned char * performByteStuffing(const unsigned char *buffer, int bufSize, int *newSize) {
+const unsigned char * byteStuffing(const unsigned char *buffer, int bufSize, int *newSize) {
     if (buffer == NULL || newSize == NULL) return NULL;
 
     // Allocate buffer with exact size needed, using an overestimated max size.
@@ -257,12 +257,47 @@ const unsigned char * performByteStuffing(const unsigned char *buffer, int bufSi
     return result;
 }
 
+/* Function to perform byte destuffing */
+int byteDestuffing(unsigned char *buffer, int bufferSize, int *processedSize, unsigned char *bcc2Received) {
+    if (buffer == NULL || processedSize == NULL || bufferSize < 1) return -1;
+
+    unsigned char *writePtr = buffer;  // Pointer to write in-place to buffer
+    unsigned char *readPtr = buffer;   // Pointer to read from buffer
+    unsigned char *endPtr = buffer + bufferSize; // Pointer to end of buffer
+
+    while (readPtr < endPtr) {
+        if (*readPtr != FRAME_ESCAPE) {
+            *writePtr++ = *readPtr++;
+        } else if (readPtr + 1 < endPtr) {  // Check we don't go out of bounds
+            ++readPtr;
+            if (*readPtr == FRAME_ESCAPED_FLAG) {
+                *writePtr++ = FRAME_FLAG;
+            } else if (*readPtr == FRAME_ESCAPED_ESCAPE) {
+                *writePtr++ = FRAME_ESCAPE;
+            } else {
+                *writePtr++ = FRAME_ESCAPE; // If invalid escape, copy escape as is
+                *writePtr++ = *readPtr; // Copy the following byte
+            }
+            ++readPtr;
+        } else { // Handle edge case if FRAME_ESCAPE is last byte
+            *writePtr++ = FRAME_ESCAPE;
+            break;
+        }
+    }
+
+    // Update BCC2 and processed size, assuming the last byte is the BCC2 value
+    *bcc2Received = *(writePtr - 1);
+    *processedSize = (int)(writePtr - buffer - 1);
+
+    return 0;
+}
+
 /* Function to write to the link layer */
 int llwrite(const unsigned char *buffer, int bufSize) {
     if(buffer == NULL) return -1;
 
     int stuffedSize;
-    const unsigned char *stuffedBuffer = performByteStuffing(buffer, bufSize, &stuffedSize);
+    const unsigned char *stuffedBuffer = byteStuffing(buffer, bufSize, &stuffedSize);
     if(stuffedBuffer == NULL) return -1;
     printf("Bytes sent: %d\n", stuffedSize);
     
@@ -309,76 +344,82 @@ int llwrite(const unsigned char *buffer, int bufSize) {
 
     while (currentState != STATE_STOP && alarmRetryCount <= connectionParameters.nRetransmissions) {
         unsigned char byte = 0;
-        int bytesRead;
-        if((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
+        int bytesRead = read(fd, &byte, sizeof(byte));
+        if (bytesRead < 0) {
             free(frame);
             perror("Error reading command");
             return -1;
         }
-        if(bytesRead > 0) {
+
+        if (bytesRead > 0) {
             switch (currentState) {
-            case STATE_START:
-                receivedControl = 0;
-                receivedAddress = 0;
-                if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                break;
-            case STATE_FLAG_RECEIVED:
-                if(byte == FRAME_FLAG) continue;
-                if(byte == ADDR_SENDER || byte == ADDR_RECEIVER) {
-                    currentState = STATE_ADDRESS_RECEIVED;
-                    receivedAddress = byte;
-                } else currentState = STATE_START;
-                break;
-            case STATE_ADDRESS_RECEIVED:
-                if(byte == RR0 || byte == RR1 || byte == REJ0 || byte == REJ1) {
-                    currentState = STATE_CONTROL_RECEIVED;
-                    receivedControl = byte;
-                } else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_CONTROL_RECEIVED:
-                if(byte == (receivedControl ^ receivedAddress)) currentState = STATE_BCC_OK;
-                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_BCC_OK:
-                if(byte == FRAME_FLAG) currentState = STATE_STOP;
-                else currentState = STATE_START;
-                break;
-            default:
-                currentState = STATE_START;
+                case STATE_START:
+                    if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                    break;
+
+                case STATE_FLAG_RECEIVED:
+                    if (byte == FRAME_FLAG) continue;
+                    if (byte == ADDR_SENDER || byte == ADDR_RECEIVER) {
+                        receivedAddress = byte;
+                        currentState = STATE_ADDRESS_RECEIVED;
+                    } else {
+                        currentState = STATE_START;
+                    }
+                    break;
+
+                case STATE_ADDRESS_RECEIVED:
+                    if (byte == RR0 || byte == RR1 || byte == REJ0 || byte == REJ1) {
+                        receivedControl = byte;
+                        currentState = STATE_CONTROL_RECEIVED;
+                    } else if (byte == FRAME_FLAG) {
+                        currentState = STATE_FLAG_RECEIVED;
+                    } else {
+                        currentState = STATE_START;
+                    }
+                    break;
+
+                case STATE_CONTROL_RECEIVED:
+                    if (byte == (receivedControl ^ receivedAddress)) {
+                        currentState = STATE_BCC_OK;
+                    } else if (byte == FRAME_FLAG) {
+                        currentState = STATE_FLAG_RECEIVED;
+                    } else {
+                        currentState = STATE_START;
+                    }
+                    break;
+
+                case STATE_BCC_OK:
+                    if (byte == FRAME_FLAG) currentState = STATE_STOP;
+                    else currentState = STATE_START;
+                    break;
             }
         }
 
-        if(currentState == STATE_STOP) {
-            if(receivedControl == REJ0 || receivedControl == REJ1) {
+        if (currentState == STATE_STOP) {
+            if (receivedControl == REJ0 || receivedControl == REJ1) {
                 isAlarmEnabled = TRUE;
                 alarmRetryCount = 0;
                 printf("Received reject; Retrying.\n");
-            }
-            if(receivedControl == RR0 || receivedControl == RR1) {
+            } else if (receivedControl == RR0 || receivedControl == RR1) {
                 struct timeval end;
                 gettimeofday(&end, NULL);
 
                 stats.time_send_data += get_time_difference(start, end);
-
                 alarmDisable();
-                sendSeqNum = 1 - sendSeqNum;
+                sendSeqNum ^= 1;
                 stats.nFrames++;
                 free(frame);
                 return bufSize;
             }
         }
-        
-        if(isAlarmEnabled) {
+
+        if (isAlarmEnabled && alarmRetryCount <= connectionParameters.nRetransmissions) {
             isAlarmEnabled = FALSE;
-            if (alarmRetryCount <= connectionParameters.nRetransmissions) {
-                if(write(fd, frame, (stuffedSize + FRAME_SIZE + 1)) < 0) {
-                    perror("Error writing send command");
-                    return -1;
-                }
-                alarm(connectionParameters.timeout);
+            if (write(fd, frame, stuffedSize + FRAME_SIZE + 1) < 0) {
+                perror("Error writing send command");
+                return -1;
             }
+            alarm(connectionParameters.timeout);
             currentState = STATE_START;
         }
     }
@@ -387,42 +428,6 @@ int llwrite(const unsigned char *buffer, int bufSize) {
     free(frame);
     return -1;
 }
-
-/* Function to perform byte destuffing */
-int byteDestuffing(unsigned char *buffer, int bufferSize, int *processedSize, unsigned char *bcc2Received) {
-    if (buffer == NULL || processedSize == NULL || bufferSize < 1) return -1;
-
-    unsigned char *writePtr = buffer;  // Pointer to write in-place to buffer
-    unsigned char *readPtr = buffer;   // Pointer to read from buffer
-    unsigned char *endPtr = buffer + bufferSize; // Pointer to end of buffer
-
-    while (readPtr < endPtr) {
-        if (*readPtr != FRAME_ESCAPE) {
-            *writePtr++ = *readPtr++;
-        } else if (readPtr + 1 < endPtr) {  // Check we don't go out of bounds
-            ++readPtr;
-            if (*readPtr == FRAME_ESCAPED_FLAG) {
-                *writePtr++ = FRAME_FLAG;
-            } else if (*readPtr == FRAME_ESCAPED_ESCAPE) {
-                *writePtr++ = FRAME_ESCAPE;
-            } else {
-                *writePtr++ = FRAME_ESCAPE; // If invalid escape, copy escape as is
-                *writePtr++ = *readPtr; // Copy the following byte
-            }
-            ++readPtr;
-        } else { // Handle edge case if FRAME_ESCAPE is last byte
-            *writePtr++ = FRAME_ESCAPE;
-            break;
-        }
-    }
-
-    // Update BCC2 and processed size, assuming the last byte is the BCC2 value
-    *bcc2Received = *(writePtr - 1);
-    *processedSize = (int)(writePtr - buffer - 1);
-
-    return 0;
-}
-
 
 /* Function to read data from the link layer */
 int llread(unsigned char *packet) {
@@ -434,100 +439,96 @@ int llread(unsigned char *packet) {
 
     while (currentState != STATE_STOP) {
         unsigned char byte = 0;
-        int bytesRead;
-        if ((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
+        int bytesRead = read(fd, &byte, sizeof(byte));
+        if (bytesRead < 0) {
             perror("Error reading DISC command");
             return -1;
         }
+
         if (bytesRead > 0) {
             switch (currentState) {
-            case STATE_START:
-                controlByteReceived = 0;
-                packetIndex = 0;
-                if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                break;
-            case STATE_FLAG_RECEIVED:
-                if (byte == FRAME_FLAG) continue;
-                if (byte == ADDR_SENDER) currentState = STATE_ADDRESS_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_ADDRESS_RECEIVED:
-                if (byte == INFO_CTRL_0 || byte == INFO_CTRL_1) {
-                    currentState = STATE_CONTROL_RECEIVED;
-                    controlByteReceived = byte;
-                } else if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_CONTROL_RECEIVED:
-                if (byte == (controlByteReceived ^ ADDR_SENDER)) currentState = STATE_DATA;
-                else {
-                    stats.errorFrames++;
+                case STATE_START:
+                    controlByteReceived = 0;
+                    packetIndex = 0;
                     if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                    else currentState = STATE_START;
-                }
-                break;
-            case STATE_DATA:
-                if (byte == FRAME_FLAG) {
-                    int processedSize = 0;
-                    unsigned char bcc2Received = 0;
+                    break;
 
-                    if (byteDestuffing(packet, packetIndex, &processedSize, &bcc2Received)) return -1;
+                case STATE_FLAG_RECEIVED:
+                    if (byte == FRAME_FLAG) continue;
+                    currentState = (byte == ADDR_SENDER) ? STATE_ADDRESS_RECEIVED : STATE_START;
+                    break;
 
-                    unsigned char bcc2Calculated = 0x00;
-                    for (size_t i = 0; i < processedSize; i++) bcc2Calculated ^= packet[i];
-
-                    unsigned char responseControl, responseAddress = ADDR_SENDER;
-
-                    if (bcc2Calculated == bcc2Received) {
-                        responseControl = (controlByteReceived == INFO_CTRL_0) ? RR1 : RR0;
+                case STATE_ADDRESS_RECEIVED:
+                    if (byte == INFO_CTRL_0 || byte == INFO_CTRL_1) {
+                        controlByteReceived = byte;
+                        currentState = STATE_CONTROL_RECEIVED;
                     } else {
-                        if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_1) || (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_0)) {
-                            responseControl = (controlByteReceived == INFO_CTRL_0) ? RR1 : RR0;
-                        } else {
-                            responseControl = (controlByteReceived == INFO_CTRL_0) ? REJ0 : REJ1;
-                        }
+                        currentState = (byte == FRAME_FLAG) ? STATE_FLAG_RECEIVED : STATE_START;
                     }
+                    break;
 
-                    currentState = STATE_START;
+                case STATE_CONTROL_RECEIVED:
+                    if (byte == (controlByteReceived ^ ADDR_SENDER)) {
+                        currentState = STATE_DATA;
+                    } else {
+                        stats.errorFrames++;
+                        currentState = (byte == FRAME_FLAG) ? STATE_FLAG_RECEIVED : STATE_START;
+                    }
+                    break;
 
-                    int errorBcc1 = rand() % 100;
-                    int errorBcc2 = rand() % 100;
+                case STATE_DATA:
+                    if (byte == FRAME_FLAG) {
+                        int processedSize = 0;
+                        unsigned char bcc2Received = 0;
 
-                    // Simulation for report purposes
-                    if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
-                        if (errorBcc1 < FAKE_BCC1_ERR) {
+                        if (byteDestuffing(packet, packetIndex, &processedSize, &bcc2Received)) return -1;
+
+                        unsigned char bcc2Calculated = 0x00;
+                        for (size_t i = 0; i < processedSize; i++) bcc2Calculated ^= packet[i];
+
+                        unsigned char responseControl = (bcc2Calculated == bcc2Received) ? 
+                            ((controlByteReceived == INFO_CTRL_0) ? RR1 : RR0) : 
+                            ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_1) || 
+                            (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_0) ? 
+                            ((controlByteReceived == INFO_CTRL_0) ? RR1 : RR0) : 
+                            ((controlByteReceived == INFO_CTRL_0) ? REJ0 : REJ1));
+
+                        currentState = STATE_START;
+
+                        if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || 
+                            (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
+                            if (rand() % 100 < FAKE_BCC1_ERR) {
+                                stats.errorFrames++;
+                                break;
+                            }
+                            if (rand() % 100 < FAKE_BCC2_ERR) responseControl = (controlByteReceived == INFO_CTRL_0) ? REJ0 : REJ1;
+                        }
+
+                        usleep(TPROP * 1000);
+
+                        if (sendCommandPacket(ADDR_SENDER, responseControl)) return -1;
+
+                        if (responseControl == REJ0 || responseControl == REJ1) {
                             stats.errorFrames++;
                             break;
                         }
 
-                        if (errorBcc2 < FAKE_BCC2_ERR) {
-                            responseControl = (controlByteReceived == INFO_CTRL_0) ? REJ0 : REJ1;
+                        if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || 
+                            (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
+                            recvSeqNum = 1 - recvSeqNum;
+                            printf("Bytes received: %d\n", processedSize);
+                            stats.bytes_read += processedSize + FRAME_SIZE + 1;
+                            stats.nFrames++;
+                            return processedSize;
                         }
+                        printf("Received duplicate packet\n");
+                    } else {
+                        packet[packetIndex++] = byte;
                     }
+                    break;
 
-                    usleep(TPROP * 1000);
-
-                    if (sendCommandPacket(responseAddress, responseControl)) return -1;
-
-                    if (responseControl == REJ0 || responseControl == REJ1) {
-                        stats.errorFrames++;
-                        break;
-                    }
-
-                    if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
-                        recvSeqNum = 1 - recvSeqNum;
-                        printf("Bytes received: %d\n", processedSize);
-                        stats.bytes_read += processedSize + FRAME_SIZE + 1;
-                        stats.nFrames++;
-                        return processedSize;
-                    }
-                    printf("Received duplicate packet\n");
-                } else {
-                    packet[packetIndex++] = byte;
-                }
-                break;
-            default:
-                currentState = STATE_START;
+                default:
+                    currentState = STATE_START;
             }
         }
     }
