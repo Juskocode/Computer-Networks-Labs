@@ -157,9 +157,7 @@ int receivePacketWithRetransmission(unsigned char expectedAddress, unsigned char
     (void)signal(SIGALRM, alarmHandler);
     if(sendCommandPacket(sendAddress, sendControl)) return -1;
     alarm(connectionParameters.timeout);
-    printf("Alarm count: %d\n", alarmRetryCount);
-    printf("Connection retransmissions: %d\n", connectionParameters.nRetransmissions);
-
+    
     while (currentState != STATE_STOP && alarmRetryCount <= connectionParameters.nRetransmissions) {
         unsigned char byte = 0;
         int bytesRead;
