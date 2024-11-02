@@ -50,7 +50,7 @@
 #define REJ0        0x54
 #define REJ1        0x55
 
-// NOTE: only for report statistics
+// NOTE: only for report stats
 #define FAKE_BCC1_ERR   0.0             // %
 #define FAKE_BCC2_ERR   0.0             // %
 #define TPROP           0               // ms
@@ -78,12 +78,13 @@ enum CommState {
     STATE_STOP
 };
 
-LinkLayer connectionParameters;
-Statistics statistics = {0, 0, 0, 0, 0.0, 0.0};
-int alarmEnabled = FALSE;
-int alarmCount = 0;
-unsigned char C_Ns = 0; // Ns
-unsigned char C_Nr = 0; // Nr (o valor que ele espera de receber)
+LinkLayer connectionParams;
+Statistics stats = {0, 0, 0, 0, 0.0, 0.0}; // Holds frame count, byte count, and timing data
+int isAlarmEnabled = FALSE;                // Tracks if an alarm is currently active
+int alarmRetryCount = 0;                   // Counts the number of alarm retries
+
+unsigned char sendSeqNum = 0;              // Send sequence number (Ns)
+unsigned char recvSeqNum = 0;              // Receive sequence number (Nr)
 
 // Retrieves the current time difference in seconds
 double get_time_difference(struct timeval ti, struct timeval tf) {
@@ -136,16 +137,16 @@ int writeBytesToPort(const char *bytes, int numBytes) {
 
 void alarmHandler(int signal)
 {
-    alarmCount++;
-    alarmEnabled = TRUE;
-    printf("Alarm count: %d\n", alarmCount);
+    alarmRetryCount++;
+    isAlarmEnabled = TRUE;
+    printf("Alarm count: %d\n", alarmRetryCount);
 }
 
 void alarmDisable()
 {
     alarm(0);
-    alarmEnabled = FALSE;
-    alarmCount = 0;
+    isAlarmEnabled = FALSE;
+    alarmRetryCount = 0;
 }
 
 /* Function to send a command packet */
@@ -209,11 +210,11 @@ int receivePacketWithRetransmission(unsigned char expectedAddress, unsigned char
     enum CommState currentState = STATE_START;
     (void)signal(SIGALRM, alarmHandler);
     if(sendCommandPacket(sendAddress, sendControl)) return -1;
-    alarm(connectionParameters.timeout);
-    printf("Alarm count: %d\n", alarmCount);
-    printf("Connection retransmissions: %d\n", connectionParameters.nRetransmissions);
+    alarm(connectionParams.timeout);
+    printf("Alarm count: %d\n", alarmRetryCount);
+    printf("Connection retransmissions: %d\n", connectionParams.nRetransmissions);
 
-    while (currentState != STATE_STOP && alarmCount <= connectionParameters.nRetransmissions) {
+    while (currentState != STATE_STOP && alarmRetryCount <= connectionParams.nRetransmissions) {
         unsigned char byte = 0;
         int bytesRead;
         if((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
@@ -254,11 +255,11 @@ int receivePacketWithRetransmission(unsigned char expectedAddress, unsigned char
             return 0;
         }
         
-        if(alarmEnabled) {
-            alarmEnabled = FALSE;
-            if (alarmCount <= connectionParameters.nRetransmissions) {
+        if(isAlarmEnabled) {
+            isAlarmEnabled = FALSE;
+            if (alarmRetryCount <= connectionParams.nRetransmissions) {
                 if(sendCommandPacket(sendAddress, sendControl)) return -1;
-                alarm(connectionParameters.timeout);
+                alarm(connectionParams.timeout);
             }
             currentState = STATE_START;
         }
@@ -270,30 +271,30 @@ int receivePacketWithRetransmission(unsigned char expectedAddress, unsigned char
 
 /* Function to open a link layer connection */
 int llopen(LinkLayer connectionParams) {
-    gettimeofday(&statistics.start, NULL);
-    memcpy(&connectionParameters, &connectionParams, sizeof(connectionParams));
+    gettimeofday(&stats.start, NULL);
+    memcpy(&connectionParams, &connectionParams, sizeof(connectionParams));
 
-    if (connectFD(connectionParameters) == -1)
+    if (connectFD(connectionParams) == -1)
         return -1;
 
-    if(connectionParameters.role == LlTx) {
+    if(connectionParams.role == LlTx) {
         struct timeval start, end;
         gettimeofday(&start, NULL);
 
         if(receivePacketWithRetransmission(ADDR_SENDER, CTRL_UA, ADDR_SENDER, CTRL_SET)) return -1;
         printf("Received transmission successfully!\n");
 
-        statistics.nFrames++;
+        stats.nFrames++;
         gettimeofday(&end, NULL);
-        statistics.time_send_control += get_time_difference(start, end);
+        stats.time_send_control += get_time_difference(start, end);
 
         printf("Connection established\n");
     }
-    if(connectionParameters.role == LlRx) {
+    if(connectionParams.role == LlRx) {
         srand(time(NULL));
         if(receivePacket(ADDR_SENDER, CTRL_SET)) return -1;
-        statistics.nFrames++;
-        statistics.bytes_read += FRAME_SIZE;
+        stats.nFrames++;
+        stats.bytes_read += FRAME_SIZE;
         if(sendCommandPacket(ADDR_SENDER, CTRL_UA)) return -1;
         printf("Connection established\n");
     }
@@ -343,7 +344,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
 
     frame[0] = FRAME_FLAG;
     frame[1] = ADDR_SENDER;
-    frame[2] = (C_Ns) ? INFO_CTRL_1 : INFO_CTRL_0;
+    frame[2] = (sendSeqNum) ? INFO_CTRL_1 : INFO_CTRL_0;
     frame[3] = frame[1] ^ frame[2];
     memcpy(frame + 4, stuffedBuffer, stuffedSize);
 
@@ -372,10 +373,10 @@ int llwrite(const unsigned char *buffer, int bufSize) {
         perror("Error writing send command");
         return -1;
     }
-    alarm(connectionParameters.timeout);
+    alarm(connectionParams.timeout);
     unsigned char receivedControl = 0, receivedAddress = 0;
 
-    while (currentState != STATE_STOP && alarmCount <= connectionParameters.nRetransmissions) {
+    while (currentState != STATE_STOP && alarmRetryCount <= connectionParams.nRetransmissions) {
         unsigned char byte = 0;
         int bytesRead;
         if((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
@@ -420,32 +421,32 @@ int llwrite(const unsigned char *buffer, int bufSize) {
 
         if(currentState == STATE_STOP) {
             if(receivedControl == REJ0 || receivedControl == REJ1) {
-                alarmEnabled = TRUE;
-                alarmCount = 0;
+                isAlarmEnabled = TRUE;
+                alarmRetryCount = 0;
                 printf("Received reject; Retrying.\n");
             }
             if(receivedControl == RR0 || receivedControl == RR1) {
                 struct timeval end;
                 gettimeofday(&end, NULL);
 
-                statistics.time_send_data += get_time_difference(start, end);
+                stats.time_send_data += get_time_difference(start, end);
 
                 alarmDisable();
-                C_Ns = 1 - C_Ns;
-                statistics.nFrames++;
+                sendSeqNum = 1 - sendSeqNum;
+                stats.nFrames++;
                 free(frame);
                 return bufSize;
             }
         }
         
-        if(alarmEnabled) {
-            alarmEnabled = FALSE;
-            if (alarmCount <= connectionParameters.nRetransmissions) {
+        if(isAlarmEnabled) {
+            isAlarmEnabled = FALSE;
+            if (alarmRetryCount <= connectionParams.nRetransmissions) {
                 if(write(fd, frame, (stuffedSize + 6)) < 0) {
                     perror("Error writing send command");
                     return -1;
                 }
-                alarm(connectionParameters.timeout);
+                alarm(connectionParams.timeout);
             }
             currentState = STATE_START;
         }
@@ -519,7 +520,7 @@ int llread(unsigned char *packet) {
             case STATE_CONTROL_RECEIVED:
                 if (byte == (controlByteReceived ^ ADDR_SENDER)) currentState = STATE_DATA;
                 else {
-                    statistics.errorFrames++;
+                    stats.errorFrames++;
                     if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
                     else currentState = STATE_START;
                 }
@@ -539,7 +540,7 @@ int llread(unsigned char *packet) {
                     if (bcc2Calculated == bcc2Received) {
                         responseControl = (controlByteReceived == INFO_CTRL_0) ? RR1 : RR0;
                     } else {
-                        if ((C_Nr == 0 && controlByteReceived == INFO_CTRL_1) || (C_Nr == 1 && controlByteReceived == INFO_CTRL_0)) {
+                        if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_1) || (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_0)) {
                             responseControl = (controlByteReceived == INFO_CTRL_0) ? RR1 : RR0;
                         } else {
                             responseControl = (controlByteReceived == INFO_CTRL_0) ? REJ0 : REJ1;
@@ -552,9 +553,9 @@ int llread(unsigned char *packet) {
                     int errorBcc2 = rand() % 100;
 
                     // Simulation for report purposes
-                    if ((C_Nr == 0 && controlByteReceived == INFO_CTRL_0) || (C_Nr == 1 && controlByteReceived == INFO_CTRL_1)) {
+                    if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
                         if (errorBcc1 < FAKE_BCC1_ERR) {
-                            statistics.errorFrames++;
+                            stats.errorFrames++;
                             break;
                         }
 
@@ -568,15 +569,15 @@ int llread(unsigned char *packet) {
                     if (sendCommandPacket(responseAddress, responseControl)) return -1;
 
                     if (responseControl == REJ0 || responseControl == REJ1) {
-                        statistics.errorFrames++;
+                        stats.errorFrames++;
                         break;
                     }
 
-                    if ((C_Nr == 0 && controlByteReceived == INFO_CTRL_0) || (C_Nr == 1 && controlByteReceived == INFO_CTRL_1)) {
-                        C_Nr = 1 - C_Nr;
+                    if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
+                        recvSeqNum = 1 - recvSeqNum;
                         printf("Bytes received: %d\n", processedSize);
-                        statistics.bytes_read += processedSize + 6;
-                        statistics.nFrames++;
+                        stats.bytes_read += processedSize + 6;
+                        stats.nFrames++;
                         return processedSize;
                     }
                     printf("Received duplicate packet\n");
@@ -602,37 +603,37 @@ void printStatistics() {
     gettimeofday(&end, NULL);
     
     // Calculate time taken for file transfer
-    float timeTaken = get_time_difference(statistics.start, end);
+    float timeTaken = get_time_difference(stats.start, end);
     printf("Total time taken for file transfer: %.2f seconds\n", timeTaken);
 
-    if (connectionParameters.role == LlRx) {
-        // Receiver statistics
+    if (connectionParams.role == LlRx) {
+        // Receiver stats
         printf("\n-- Receiver Statistics --\n");
         
         // Calculate theoretical efficiency
-        float a = ((float) TPROP / 1000.0) / ((float) MAX_PAYLOAD_SIZE * 8.0 / connectionParameters.baudRate);
+        float a = ((float) TPROP / 1000.0) / ((float) MAX_PAYLOAD_SIZE * 8.0 / connectionParams.baudRate);
         float expectedFER = FAKE_BCC1_ERR / 100.0 + ((100.0 - FAKE_BCC1_ERR) / 100.0) * (FAKE_BCC2_ERR / 100.0);
         float theoreticalEfficiency = (1.0 - expectedFER) / (1 + 2 * a);
         
-        printf("Total bytes received (post-destuffing): %lu bytes\n", statistics.bytes_read);
-        printf("Number of valid frames received: %d frames\n", statistics.nFrames);
-        printf("Average frame size: %.2f bytes\n", (float) statistics.bytes_read / statistics.nFrames);
+        printf("Total bytes received (post-destuffing): %lu bytes\n", stats.bytes_read);
+        printf("Number of valid frames received: %d frames\n", stats.nFrames);
+        printf("Average frame size: %.2f bytes\n", (float) stats.bytes_read / stats.nFrames);
         
-        printf("\nData transfer rate: %.2f bits per second\n", (float) statistics.bytes_read * 8.0 / timeTaken);
+        printf("\nData transfer rate: %.2f bits per second\n", (float) stats.bytes_read * 8.0 / timeTaken);
         printf("Theoretical communication efficiency: %.2f\n", theoreticalEfficiency);
         printf("Targeted efficiency: %.2f\n", 
-            ((float) (FILE_SIZE * 8.0) / timeTaken) / (float) connectionParameters.baudRate);
+            ((float) (FILE_SIZE * 8.0) / timeTaken) / (float) connectionParams.baudRate);
     } 
     else {
-        // Transmitter statistics
+        // Transmitter stats
         printf("\n-- Transmitter Statistics --\n");
         
-        printf("Number of frames successfully sent: %d frames\n", statistics.nFrames);
-        printf("Total time for sending control frames (with acknowledgment): %.2f seconds\n", statistics.time_send_control);
-        printf("Total time for sending data frames (with acknowledgment): %.2f seconds\n", statistics.time_send_data);
+        printf("Number of frames successfully sent: %d frames\n", stats.nFrames);
+        printf("Total time for sending control frames (with acknowledgment): %.2f seconds\n", stats.time_send_control);
+        printf("Total time for sending data frames (with acknowledgment): %.2f seconds\n", stats.time_send_data);
         
         printf("\nAverage time per frame sent: %.2f seconds\n", 
-            (statistics.time_send_data + statistics.time_send_control) / statistics.nFrames);
+            (stats.time_send_data + stats.time_send_control) / stats.nFrames);
     }
     printf("\n##################################################\n");
 
@@ -641,7 +642,7 @@ void printStatistics() {
 
 int llclose(int showStatistics)
 {
-    if(connectionParameters.role == LlTx)
+    if(connectionParams.role == LlTx)
     {
         struct timeval temp_start, temp_end;
 
@@ -650,26 +651,26 @@ int llclose(int showStatistics)
         if(receivePacketWithRetransmission(ADDR_RECEIVER, CTRL_DISCONNECT, ADDR_SENDER, CTRL_DISCONNECT))
             return disconnectFD();
 
-        statistics.nFrames++;
+        stats.nFrames++;
         gettimeofday(&temp_end, NULL);
 
-        statistics.time_send_control += get_time_difference(temp_start, temp_end);
-        statistics.nFrames++;
+        stats.time_send_control += get_time_difference(temp_start, temp_end);
+        stats.nFrames++;
 
         if(sendCommandPacket(ADDR_RECEIVER, CTRL_UA)) return disconnectFD();
         printf("Disconnected\n");
     }
-    if(connectionParameters.role == LlRx)
+    if(connectionParams.role == LlRx)
     {
         if(receivePacket(ADDR_SENDER, CTRL_DISCONNECT)) 
             return disconnectFD();
-        statistics.bytes_read += FRAME_SIZE;
-        statistics.nFrames++;
+        stats.bytes_read += FRAME_SIZE;
+        stats.nFrames++;
 
         if(receivePacketWithRetransmission(ADDR_RECEIVER, CTRL_UA, ADDR_RECEIVER, CTRL_DISCONNECT)) 
             return disconnectFD();
-        statistics.bytes_read += FRAME_SIZE;
-        statistics.nFrames++;
+        stats.bytes_read += FRAME_SIZE;
+        stats.nFrames++;
 
         printf("Disconnected\n");
     }
