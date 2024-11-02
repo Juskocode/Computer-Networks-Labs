@@ -22,31 +22,34 @@
 #define TRUE 1
 
 #define FRAME_SIZE 5
+
 /*[F][A][C][BCC1][BCC2]*/
 
-/*FLAGS*/
-#define FLAG        0x7E
-#define ESC         0x7D
-#define ESC_FLAG    0x5E
-#define ESC_ESC     0x5D
+/* Frame Boundary Flags */
+#define FRAME_FLAG             0x7E
+#define FRAME_ESCAPE           0x7D
+#define FRAME_ESCAPED_FLAG     0x5E
+#define FRAME_ESCAPED_ESCAPE   0x5D
 
-/*Adress Field*/
-#define A_SEND      0x03
-#define A_RECV      0x01
+/* Address Field Identifiers */
+#define ADDR_SENDER            0x03
+#define ADDR_RECEIVER          0x01
 
-/*Control Field*/
-#define C_SET       0x03
-#define C_UA        0x07
-#define C_DISC      0x0B
+/* Control Field Commands */
+#define CTRL_SET               0x03
+#define CTRL_UA                0x07
+#define CTRL_DISCONNECT        0x0B
 
-/*Information Field*/
-#define C_INF0      0x00
-#define C_INF1      0x40
+/* Information Field Identifiers */
+#define INFO_CTRL_0            0x00
+#define INFO_CTRL_1            0x40
 
-#define RR0         0x05
-#define RR1         0x85
-#define REJ0        0x01
-#define REJ1        0x81
+
+/*ACK's and NACK's*/
+#define RR0         0xAA
+#define RR1         0xAB
+#define REJ0        0x54
+#define REJ1        0x55
 
 // NOTE: only for report statistics
 #define FAKE_BCC1_ERR   0.0             // %
@@ -65,14 +68,15 @@ typedef struct
     struct timeval start;       // When program starts
 } Statistics;
 
-enum state{
-    START, 
-    FLAG_RCV,
-    A_RCV,
-    C_RCV,
-    BCC_OK,
-    DATA,
-    STOP
+/* Enum to represent communication states */
+enum CommState {
+    STATE_START, 
+    STATE_FLAG_RECEIVED,
+    STATE_ADDRESS_RECEIVED,
+    STATE_CONTROL_RECEIVED,
+    STATE_BCC_OK,
+    STATE_DATA,
+    STATE_STOP
 };
 
 LinkLayer connectionParameters;
@@ -145,59 +149,55 @@ void alarmDisable()
     alarmCount = 0;
 }
 
-int send_packet_command( unsigned char A, unsigned char C)
-{
-    unsigned char buf[FRAME_SIZE] = {FLAG, A, C, 0, FLAG};
-    buf[3] = buf[1] ^ buf[2];
+/* Function to send a command packet */
+int sendCommandPacket(unsigned char address, unsigned char control) {
+    unsigned char buffer[FRAME_SIZE] = {FRAME_FLAG, address, control, 0, FRAME_FLAG};
+    buffer[3] = buffer[1] ^ buffer[2];
     
-    if(write(fd, buf, FRAME_SIZE) < 0)
-    {
-        perror("Error write send command");
+    if(write(fd, buffer, FRAME_SIZE) < 0) {
+        perror("Error writing send command");
         return -1;
     }
     return 0;
 }
 
-int receivePacket(unsigned char A_EXPECTED, unsigned char C_EXPECTED) 
-{
-    enum state enum_state = START;
+/* Function to receive a packet */
+int receivePacket(unsigned char expectedAddress, unsigned char expectedControl) {
+    enum CommState currentState = STATE_START;
     
-    while (enum_state != STOP)
-    {
+    while (currentState != STATE_STOP) {
         unsigned char byte = 0;
-        int bytes;
-        if((bytes = read(fd, &byte, sizeof(byte))) < 0)
-        {
-            perror("Error read DISC command");
+        int bytesRead;
+        if((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
+            perror("Error reading DISC command");
             return -1;
         }
-        if(bytes > 0){
-            switch (enum_state)
-            {
-            case START:
-                if(byte == FLAG) enum_state = FLAG_RCV;
+        if(bytesRead > 0) {
+            switch (currentState) {
+            case STATE_START:
+                if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
                 break;
-            case FLAG_RCV:
-                if(byte == FLAG) continue;
-                if(byte == A_EXPECTED) enum_state = A_RCV;
-                else enum_state = START;
+            case STATE_FLAG_RECEIVED:
+                if(byte == FRAME_FLAG) continue;
+                if(byte == expectedAddress) currentState = STATE_ADDRESS_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case A_RCV:
-                if(byte == C_EXPECTED) enum_state = C_RCV;
-                else if(byte == FLAG) enum_state = FLAG_RCV;
-                else enum_state = START;
+            case STATE_ADDRESS_RECEIVED:
+                if(byte == expectedControl) currentState = STATE_CONTROL_RECEIVED;
+                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case C_RCV:
-                if(byte == (C_EXPECTED ^ A_EXPECTED)) enum_state = BCC_OK;
-                else if(byte == FLAG) enum_state = FLAG_RCV;
-                else enum_state = START;
+            case STATE_CONTROL_RECEIVED:
+                if(byte == (expectedControl ^ expectedAddress)) currentState = STATE_BCC_OK;
+                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case BCC_OK:
-                if(byte == FLAG) enum_state = STOP;
-                else enum_state = START;
-                break;      
+            case STATE_BCC_OK:
+                if(byte == FRAME_FLAG) currentState = STATE_STOP;
+                else currentState = STATE_START;
+                break;
             default:
-                enum_state = START;
+                currentState = STATE_START;
             }
         }
     }
@@ -205,466 +205,441 @@ int receivePacket(unsigned char A_EXPECTED, unsigned char C_EXPECTED)
     return 0; 
 }
 
-int receivePacketRetransmission(unsigned char A_EXPECTED, unsigned char C_EXPECTED, unsigned char A_TO_SEND, unsigned char C_TO_SEND)
-{
-    enum state enum_state = START;
+/* Function to receive a packet with retransmission */
+int receivePacketWithRetransmission(unsigned char expectedAddress, unsigned char expectedControl, unsigned char sendAddress, unsigned char sendControl) {
+    enum CommState currentState = STATE_START;
     (void)signal(SIGALRM, alarmHandler);
-    if(send_packet_command(A_TO_SEND, C_TO_SEND)) return -1;
+    if(sendCommandPacket(sendAddress, sendControl)) return -1;
     alarm(connectionParameters.timeout);
-    printf("Alarm count: alarmCount is %d\n", alarmCount);
-    printf("Connection retansmissions:  %d\n", connectionParameters.nRetransmissions);
+    printf("Alarm count: %d\n", alarmCount);
+    printf("Connection retransmissions: %d\n", connectionParameters.nRetransmissions);
 
-    while (enum_state != STOP && alarmCount <= connectionParameters.nRetransmissions)
-    {
+    while (currentState != STATE_STOP && alarmCount <= connectionParameters.nRetransmissions) {
         unsigned char byte = 0;
-        int bytes;
-        if((bytes = read(fd, &byte, sizeof(byte))) < 0)
-        {
-            perror("Error read UA command");
+        int bytesRead;
+        if((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
+            perror("Error reading UA command");
             return -1;
         }
-        if(bytes > 0){
-            switch (enum_state)
-            {
-            case START:
-                if(byte == FLAG) enum_state = FLAG_RCV;
+        if(bytesRead > 0) {
+            switch (currentState) {
+            case STATE_START:
+                if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
                 break;
-            case FLAG_RCV:
-                if(byte == FLAG) continue;
-                if(byte == A_EXPECTED) enum_state = A_RCV;
-                else enum_state = START;
+            case STATE_FLAG_RECEIVED:
+                if(byte == FRAME_FLAG) continue;
+                if(byte == expectedAddress) currentState = STATE_ADDRESS_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case A_RCV:
-                if(byte == C_EXPECTED) enum_state = C_RCV;
-                else if(byte == FLAG) enum_state = FLAG_RCV;
-                else enum_state = START;
+            case STATE_ADDRESS_RECEIVED:
+                if(byte == expectedControl) currentState = STATE_CONTROL_RECEIVED;
+                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case C_RCV:
-                if(byte == (C_EXPECTED ^ A_EXPECTED)) enum_state = BCC_OK;
-                else if(byte == FLAG) enum_state = FLAG_RCV;
-                else enum_state = START;
+            case STATE_CONTROL_RECEIVED:
+                if(byte == (expectedControl ^ expectedAddress)) currentState = STATE_BCC_OK;
+                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case BCC_OK:
-                if(byte == FLAG) enum_state = STOP;
-                else enum_state = START;
-                break;      
+            case STATE_BCC_OK:
+                if(byte == FRAME_FLAG) currentState = STATE_STOP;
+                else currentState = STATE_START;
+                break;
             default:
-                enum_state = START;
+                currentState = STATE_START;
             }
         }
 
-        if(enum_state == STOP) 
-        {
+        if(currentState == STATE_STOP) {
             alarmDisable();
             return 0;
         }
         
-        if(alarmEnabled)
-        {
+        if(alarmEnabled) {
             alarmEnabled = FALSE;
             if (alarmCount <= connectionParameters.nRetransmissions) {
-                if(send_packet_command(A_TO_SEND, C_TO_SEND)) return -1;
+                if(sendCommandPacket(sendAddress, sendControl)) return -1;
                 alarm(connectionParameters.timeout);
             }
-            enum_state = START;
+            currentState = STATE_START;
         }
     }
 
     alarmDisable();
-    
     return -1;
 }
 
-int llopen(LinkLayer connectionParametersApp)
-{
+/* Function to open a link layer connection */
+int llopen(LinkLayer connectionParams) {
     gettimeofday(&statistics.start, NULL);
-
-    memcpy(&connectionParameters, &connectionParametersApp, sizeof(connectionParametersApp));
+    memcpy(&connectionParameters, &connectionParams, sizeof(connectionParams));
 
     if (connectFD(connectionParameters) == -1)
         return -1;
 
-    if(connectionParameters.role == LlTx){
-        struct timeval temp_start, temp_end;
-        gettimeofday(&temp_start, NULL);
+    if(connectionParameters.role == LlTx) {
+        struct timeval start, end;
+        gettimeofday(&start, NULL);
 
-        if(receivePacketRetransmission(A_SEND, C_UA, A_SEND, C_SET)) return -1;
-        printf("receive transmission with sucess!\n");
+        if(receivePacketWithRetransmission(ADDR_SENDER, CTRL_UA, ADDR_SENDER, CTRL_SET)) return -1;
+        printf("Received transmission successfully!\n");
 
         statistics.nFrames++;
-
-        gettimeofday(&temp_end, NULL);
-
-        statistics.time_send_control += get_time_difference(temp_start, temp_end);
+        gettimeofday(&end, NULL);
+        statistics.time_send_control += get_time_difference(start, end);
 
         printf("Connection established\n");
     }
     if(connectionParameters.role == LlRx) {
         srand(time(NULL));
-        if(receivePacket(A_SEND, C_SET)) return -1;
+        if(receivePacket(ADDR_SENDER, CTRL_SET)) return -1;
         statistics.nFrames++;
         statistics.bytes_read += FRAME_SIZE;
-        if(send_packet_command(A_SEND, C_UA)) return -1;
+        if(sendCommandPacket(ADDR_SENDER, CTRL_UA)) return -1;
         printf("Connection established\n");
     }
     return 0;
 }
 
-const unsigned char * byteStuffing(const unsigned char *buf, int bufSize, int *newSize)
-{
-    if(buf == NULL || newSize == NULL) return NULL;
+/* Function for byte stuffing */
+const unsigned char * performByteStuffing(const unsigned char *buffer, int bufSize, int *newSize) {
+    if(buffer == NULL || newSize == NULL) return NULL;
 
     unsigned char *result = (unsigned char *) malloc(bufSize * 2 + 1);
     if(result == NULL) return NULL;
     size_t j = 0;
 
-    for(size_t i = 0; i < bufSize; i++, j++){
-        if(buf[i] == FLAG){
-            result[j++] = ESC;
-            result[j] = ESC_FLAG;
+    for(size_t i = 0; i < bufSize; i++, j++) {
+        if(buffer[i] == FRAME_FLAG) {
+            result[j++] = FRAME_ESCAPE;
+            result[j] = FRAME_ESCAPED_FLAG;
         }
-        else if (buf[i] == ESC) {
-            result[j++] = ESC;
-            result[j] = ESC_ESC;
+        else if (buffer[i] == FRAME_ESCAPE) {
+            result[j++] = FRAME_ESCAPE;
+            result[j] = FRAME_ESCAPED_ESCAPE;
         }
         else
-            result[j] = buf[i];
+            result[j] = buffer[i];
     }
 
     *newSize = (int) j;
     result = realloc(result, j);
-
-    if (result == NULL) return NULL;
-
     return result;
 }
 
-int llwrite(const unsigned char *buf, int bufSize)
-{
-    if(buf == NULL) return -1;
+/* Function to write to the link layer */
+int llwrite(const unsigned char *buffer, int bufSize) {
+    if(buffer == NULL) return -1;
 
-    int newSize;
-    const unsigned char *newBuf = byteStuffing(buf, bufSize, &newSize);
-    if(newBuf == NULL) return -1;
-    printf("Bytes sent: %d\n", newSize);
-    unsigned char *trama = (unsigned char *) malloc(newSize + 6);
-    if(trama == NULL){
-        free((unsigned char *) newBuf);
+    int stuffedSize;
+    const unsigned char *stuffedBuffer = performByteStuffing(buffer, bufSize, &stuffedSize);
+    if(stuffedBuffer == NULL) return -1;
+    printf("Bytes sent: %d\n", stuffedSize);
+    
+    unsigned char *frame = (unsigned char *) malloc(stuffedSize + 6);
+    if(frame == NULL) {
+        free((unsigned char *) stuffedBuffer);
         return -1;
-    } 
+    }
 
-    trama[0] = FLAG;
-    trama[1] = A_SEND;
-    trama[2] = (C_Ns) ? C_INF1 : C_INF0;
-    trama[3] = trama[1] ^ trama[2];
-    memcpy(trama + 4, newBuf, newSize);
-
+    frame[0] = FRAME_FLAG;
+    frame[1] = ADDR_SENDER;
+    frame[2] = (C_Ns) ? INFO_CTRL_1 : INFO_CTRL_0;
+    frame[3] = frame[1] ^ frame[2];
+    memcpy(frame + 4, stuffedBuffer, stuffedSize);
 
     unsigned char bcc2 = 0x00;
-    for(size_t i = 0; i < bufSize; i++) bcc2 ^=  buf[i];
-    trama[newSize + 4] = bcc2; 
-    if(bcc2 == FLAG){
-        trama[newSize + 4] = ESC;
-        newSize++;
-        trama[newSize + 4] = ESC_FLAG;
-        trama = realloc(trama, newSize + 6);
-        trama[newSize + 5] = FLAG;
-    }else{
-        trama[newSize + 5] = FLAG;
-    }
-    
+    for(size_t i = 0; i < bufSize; i++) bcc2 ^= buffer[i];
+    frame[stuffedSize + 4] = bcc2;
 
-    enum state enum_state = START;
+    if(bcc2 == FRAME_FLAG) {
+        frame[stuffedSize + 4] = FRAME_ESCAPE;
+        stuffedSize++;
+        frame[stuffedSize + 4] = FRAME_ESCAPED_FLAG;
+        frame = realloc(frame, stuffedSize + 6);
+        frame[stuffedSize + 5] = FRAME_FLAG;
+    } else {
+        frame[stuffedSize + 5] = FRAME_FLAG;
+    }
+
+    enum CommState currentState = STATE_START;
     (void)signal(SIGALRM, alarmHandler);
 
-    struct timeval temp_start;
-    gettimeofday(&temp_start, NULL);
+    struct timeval start;
+    gettimeofday(&start, NULL);
 
-    if(write(fd, trama, (newSize + 6)) < 0)
-    {
-        free(trama);
-        perror("Error write send command");
+    if(write(fd, frame, (stuffedSize + 6)) < 0) {
+        free(frame);
+        perror("Error writing send command");
         return -1;
     }
-    alarm(connectionParameters.timeout); 
-    unsigned char C_received = 0, A_received = 0;
+    alarm(connectionParameters.timeout);
+    unsigned char receivedControl = 0, receivedAddress = 0;
 
-    while (enum_state != STOP && alarmCount <= connectionParameters.nRetransmissions)
-    {
+    while (currentState != STATE_STOP && alarmCount <= connectionParameters.nRetransmissions) {
         unsigned char byte = 0;
-        int bytes;
-        if((bytes = read(fd, &byte, sizeof(byte))) < 0)
-        {
-            free(trama);
-            perror("Error read command");
+        int bytesRead;
+        if((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
+            free(frame);
+            perror("Error reading command");
             return -1;
         }
-        if(bytes > 0){
-            switch (enum_state)
-            {
-            case START:
-                C_received = 0;
-                A_received = 0;
-                if(byte == FLAG) enum_state = FLAG_RCV;
+        if(bytesRead > 0) {
+            switch (currentState) {
+            case STATE_START:
+                receivedControl = 0;
+                receivedAddress = 0;
+                if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
                 break;
-            case FLAG_RCV:
-                if(byte == FLAG) continue;
-                if(byte == A_SEND || byte == A_RECV) {
-                    enum_state = A_RCV;
-                    A_received = byte;
-                }
-                else enum_state = START;
+            case STATE_FLAG_RECEIVED:
+                if(byte == FRAME_FLAG) continue;
+                if(byte == ADDR_SENDER || byte == ADDR_RECEIVER) {
+                    currentState = STATE_ADDRESS_RECEIVED;
+                    receivedAddress = byte;
+                } else currentState = STATE_START;
                 break;
-            case A_RCV:
+            case STATE_ADDRESS_RECEIVED:
                 if(byte == RR0 || byte == RR1 || byte == REJ0 || byte == REJ1) {
-                    enum_state = C_RCV;
-                    C_received = byte;
-                }
-                else if(byte == FLAG) enum_state = FLAG_RCV;
-                else enum_state = START;
+                    currentState = STATE_CONTROL_RECEIVED;
+                    receivedControl = byte;
+                } else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case C_RCV:
-                if(byte == (C_received ^ A_received)) enum_state = BCC_OK;
-                else if(byte == FLAG) enum_state = FLAG_RCV;
-                else enum_state = START;
+            case STATE_CONTROL_RECEIVED:
+                if(byte == (receivedControl ^ receivedAddress)) currentState = STATE_BCC_OK;
+                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case BCC_OK:
-                if(byte == FLAG) enum_state = STOP;
-                else enum_state = START;
+            case STATE_BCC_OK:
+                if(byte == FRAME_FLAG) currentState = STATE_STOP;
+                else currentState = STATE_START;
                 break;
             default:
-                enum_state = START;
+                currentState = STATE_START;
             }
         }
 
-        if(enum_state == STOP) 
-        {
-            if(C_received == REJ0 || C_received == REJ1){
+        if(currentState == STATE_STOP) {
+            if(receivedControl == REJ0 || receivedControl == REJ1) {
                 alarmEnabled = TRUE;
-                alarmCount = 0; 
-                printf("Received reject; Second try.\n");
+                alarmCount = 0;
+                printf("Received reject; Retrying.\n");
             }
-            if(C_received == RR0 || C_received == RR1) {
-                struct timeval temp_end;
-                gettimeofday(&temp_end, NULL);
+            if(receivedControl == RR0 || receivedControl == RR1) {
+                struct timeval end;
+                gettimeofday(&end, NULL);
 
-                statistics.time_send_data += get_time_difference(temp_start, temp_end);
+                statistics.time_send_data += get_time_difference(start, end);
 
                 alarmDisable();
                 C_Ns = 1 - C_Ns;
                 statistics.nFrames++;
-                free(trama);
+                free(frame);
                 return bufSize;
             }
         }
         
-        if(alarmEnabled)
-        {
+        if(alarmEnabled) {
             alarmEnabled = FALSE;
-
             if (alarmCount <= connectionParameters.nRetransmissions) {
-                if(write(fd, trama, (newSize + 6)) < 0)
-                {
-                    perror("Error write send command");
+                if(write(fd, frame, (stuffedSize + 6)) < 0) {
+                    perror("Error writing send command");
                     return -1;
                 }
                 alarm(connectionParameters.timeout);
             }
-
-            enum_state = START;
+            currentState = STATE_START;
         }
     }
 
     alarmDisable();
-    free(trama);
-
+    free(frame);
     return -1;
 }
 
-int byteDestuffing(unsigned char *buf, int bufSize, int *newSize, unsigned char *bcc2_received)
-{
-    if (buf == NULL || newSize == NULL) return -1;
-    if (bufSize < 1) return 0;
+/* Function to perform byte destuffing */
+int byteDestuffing(unsigned char *buffer, int bufferSize, int *processedSize, unsigned char *bcc2Received) {
+    if (buffer == NULL || processedSize == NULL) return -1;
+    if (bufferSize < 1) return 0;
 
-    unsigned char *read = buf;           // Pointer for reading from buf
-    unsigned char *write = buf;          // Pointer for writing to buf
+    unsigned char *readPtr = buffer;  // Pointer to read from buffer
+    unsigned char *writePtr = buffer; // Pointer to write in-place to buffer
 
-    while (read < buf + bufSize) {
-        if (*read != ESC) {
-            *write++ = *read++;
+    while (readPtr < buffer + bufferSize) {
+        if (*readPtr != FRAME_ESCAPE) {
+            *writePtr++ = *readPtr++;
         } else {
-            if (*(read + 1) == ESC_FLAG) {
-                *write++ = FLAG;
-            } else if (*(read + 1) == ESC_ESC) {
-                *write++ = ESC;
+            if (*(readPtr + 1) == FRAME_ESCAPED_FLAG) {
+                *writePtr++ = FRAME_FLAG;
+            } else if (*(readPtr + 1) == FRAME_ESCAPED_ESCAPE) {
+                *writePtr++ = FRAME_ESCAPE;
             }
-            read += 2;
+            readPtr += 2;
         }
     }
 
-    *bcc2_received = *(write - 1);
-    *newSize = write - buf - 1;
+    *bcc2Received = *(writePtr - 1);
+    *processedSize = writePtr - buffer - 1;
     return 0;
 }
 
-int llread(unsigned char *packet)
-{
+/* Function to read data from the link layer */
+int llread(unsigned char *packet) {
     usleep(TPROP * 1000);
 
-    enum state enum_state = START;
-    unsigned char C_received = 0;
-    size_t pkt_indx = 0;
-    while (enum_state != STOP)
-    {
+    enum CommState currentState = STATE_START;
+    unsigned char controlByteReceived = 0;
+    size_t packetIndex = 0;
+
+    while (currentState != STATE_STOP) {
         unsigned char byte = 0;
-        int bytes;
-        if((bytes = read(fd,&byte, sizeof(byte))) < 0)
-        {
-            perror("Error read DISC command");
+        int bytesRead;
+        if ((bytesRead = read(fd, &byte, sizeof(byte))) < 0) {
+            perror("Error reading DISC command");
             return -1;
         }
-        if(bytes > 0){
-            switch (enum_state)
-            {
-            case START:
-                C_received = 0;
-                pkt_indx = 0;
-                if(byte == FLAG) enum_state = FLAG_RCV;
+
+        if (bytesRead > 0) {
+            switch (currentState) {
+            case STATE_START:
+                controlByteReceived = 0;
+                packetIndex = 0;
+                if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
                 break;
-            case FLAG_RCV:
-                if(byte == FLAG) continue;
-                if(byte == A_SEND) enum_state = A_RCV;
-                else enum_state = START;
+            case STATE_FLAG_RECEIVED:
+                if (byte == FRAME_FLAG) continue;
+                if (byte == ADDR_SENDER) currentState = STATE_ADDRESS_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case A_RCV:
-                if(byte == C_INF0 || byte == C_INF1){
-                    enum_state = C_RCV;
-                    C_received = byte;
-                }
-                else if(byte == FLAG) enum_state = FLAG_RCV;
-                else enum_state = START;
+            case STATE_ADDRESS_RECEIVED:
+                if (byte == INFO_CTRL_0 || byte == INFO_CTRL_1) {
+                    currentState = STATE_CONTROL_RECEIVED;
+                    controlByteReceived = byte;
+                } else if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                else currentState = STATE_START;
                 break;
-            case C_RCV:
-                if (byte == (C_received ^ A_SEND)) enum_state = DATA; 
+            case STATE_CONTROL_RECEIVED:
+                if (byte == (controlByteReceived ^ ADDR_SENDER)) currentState = STATE_DATA;
                 else {
                     statistics.errorFrames++;
-                    if(byte == FLAG) enum_state = FLAG_RCV;
-                    else enum_state = START;
+                    if (byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
+                    else currentState = STATE_START;
                 }
                 break;
-            case DATA: 
-                if(byte == FLAG) {
-                    int newSize = 0;
-                    unsigned char bcc2_received = 0;
-                    
-                    if (byteDestuffing(packet, pkt_indx, &newSize, &bcc2_received)) return -1;
+            case STATE_DATA:
+                if (byte == FRAME_FLAG) {
+                    int processedSize = 0;
+                    unsigned char bcc2Received = 0;
 
-                    unsigned char bcc2 = 0x00;
-                    for (size_t i = 0; i < newSize; i++) bcc2 ^= packet[i];
+                    if (byteDestuffing(packet, packetIndex, &processedSize, &bcc2Received)) return -1;
 
-                    unsigned char C_respons, A_respons;
+                    unsigned char bcc2Calculated = 0x00;
+                    for (size_t i = 0; i < processedSize; i++) bcc2Calculated ^= packet[i];
 
-                    if (bcc2 == bcc2_received) {
-                        C_respons = (C_received == C_INF0)? RR1 : RR0;
-                        A_respons = A_SEND;
-                    }
-                    else {
-                        if ((C_Nr == 0 && C_received == C_INF1) || (C_Nr == 1 && C_received == C_INF0)) {
-                            C_respons = (C_received == C_INF0)? RR1 : RR0;
-                            A_respons = A_SEND;
-                        }
-                        else {
-                            C_respons = (C_received == C_INF0) ? REJ0 : REJ1;
-                            A_respons = A_SEND;
+                    unsigned char responseControl, responseAddress = ADDR_SENDER;
+
+                    if (bcc2Calculated == bcc2Received) {
+                        responseControl = (controlByteReceived == INFO_CTRL_0) ? RR1 : RR0;
+                    } else {
+                        if ((C_Nr == 0 && controlByteReceived == INFO_CTRL_1) || (C_Nr == 1 && controlByteReceived == INFO_CTRL_0)) {
+                            responseControl = (controlByteReceived == INFO_CTRL_0) ? RR1 : RR0;
+                        } else {
+                            responseControl = (controlByteReceived == INFO_CTRL_0) ? REJ0 : REJ1;
                         }
                     }
 
-                    enum_state = START;
+                    currentState = STATE_START;
 
-                    int error_in_bcc1 = rand() % 100;
-                    int error_in_bcc2 = rand() % 100;
+                    int errorBcc1 = rand() % 100;
+                    int errorBcc2 = rand() % 100;
 
-                    // NOTE: code only for report
-                    if ((C_Nr == 0 && C_received == C_INF0) || (C_Nr == 1 && C_received == C_INF1)) {
-                        if (error_in_bcc1 <= FAKE_BCC1_ERR - 1) {
+                    // Simulation for report purposes
+                    if ((C_Nr == 0 && controlByteReceived == INFO_CTRL_0) || (C_Nr == 1 && controlByteReceived == INFO_CTRL_1)) {
+                        if (errorBcc1 < FAKE_BCC1_ERR) {
                             statistics.errorFrames++;
                             break;
                         }
 
-                        if (error_in_bcc2 <= FAKE_BCC2_ERR - 1) {
-                            C_respons = (C_received == C_INF0) ? REJ0 : REJ1;
-                            A_respons = A_SEND;
+                        if (errorBcc2 < FAKE_BCC2_ERR) {
+                            responseControl = (controlByteReceived == INFO_CTRL_0) ? REJ0 : REJ1;
                         }
                     }
 
                     usleep(TPROP * 1000);
 
-                    if (send_packet_command(A_respons, C_respons)) return -1;
+                    if (sendCommandPacket(responseAddress, responseControl)) return -1;
 
-                    if (C_respons == REJ0 || C_respons == REJ1) {
+                    if (responseControl == REJ0 || responseControl == REJ1) {
                         statistics.errorFrames++;
                         break;
                     }
 
-                    if ((C_Nr == 0 && C_received == C_INF0) || (C_Nr == 1 && C_received == C_INF1)){
+                    if ((C_Nr == 0 && controlByteReceived == INFO_CTRL_0) || (C_Nr == 1 && controlByteReceived == INFO_CTRL_1)) {
                         C_Nr = 1 - C_Nr;
-                        printf("Bytes received: %d\n", newSize);
-                        statistics.bytes_read += newSize + 6;
+                        printf("Bytes received: %d\n", processedSize);
+                        statistics.bytes_read += processedSize + 6;
                         statistics.nFrames++;
-                        return newSize;
+                        return processedSize;
                     }
-                    printf("Received duplicate\n");
-                } else packet[pkt_indx++] = byte;
-                
+                    printf("Received duplicate packet\n");
+                } else {
+                    packet[packetIndex++] = byte;
+                }
                 break;
             default:
-                enum_state = START;
+                currentState = STATE_START;
             }
         }
     }
+
     return -1;
 }
 
-void printStatistics()
-{
-    printf("\n======== Statistics ========\n");
+
+void printStatistics() {
+    printf("\n############ Communication Statistics ############\n");
+
+
+    struct timeval end;
+    gettimeofday(&end, NULL);
+    
+    // Calculate time taken for file transfer
+    float timeTaken = get_time_difference(statistics.start, end);
+    printf("Total time taken for file transfer: %.2f seconds\n", timeTaken);
 
     if (connectionParameters.role == LlRx) {
-
-        float a = (float) ((float) TPROP / 1000) / (float) ((float) MAX_PAYLOAD_SIZE * 8.0 / (float) connectionParameters.baudRate);
-
-        float EXPECTED_FER = FAKE_BCC1_ERR/100.0 + (100.0 - FAKE_BCC1_ERR)/100.0 * FAKE_BCC2_ERR/100.0;
-
-        printf("\nNumber of bytes received (after destuffing): %lu\n", statistics.bytes_read);
-
-        printf("\nNumber of good frames received: %d frames\n", statistics.nFrames);
-
-        struct timeval end;
-        gettimeofday(&end, NULL);
-
-        printf("\nTime taken to download file: %f seconds\n", get_time_difference(statistics.start, end));
-
-        printf("\nAverage size of a frame: %ld bytes per frame\n", statistics.bytes_read / statistics.nFrames);
-
-        printf("\nDébito recebido (bits/s): %f\n", (float) statistics.bytes_read * 8.0 / get_time_difference(statistics.start, end));
-
-        printf("\nEficiencia teorica: %f", (1.0 - EXPECTED_FER) / (1 + 2*a));
-
-        printf("\nEficiencia pedida %f\n", ((float) ((float) FILE_SIZE * 8.0) / get_time_difference(statistics.start, end)) / (float) connectionParameters.baudRate);
-    }
-
+        // Receiver statistics
+        printf("\n-- Receiver Statistics --\n");
+        
+        // Calculate theoretical efficiency
+        float a = ((float) TPROP / 1000.0) / ((float) MAX_PAYLOAD_SIZE * 8.0 / connectionParameters.baudRate);
+        float expectedFER = FAKE_BCC1_ERR / 100.0 + ((100.0 - FAKE_BCC1_ERR) / 100.0) * (FAKE_BCC2_ERR / 100.0);
+        float theoreticalEfficiency = (1.0 - expectedFER) / (1 + 2 * a);
+        
+        printf("Total bytes received (post-destuffing): %lu bytes\n", statistics.bytes_read);
+        printf("Number of valid frames received: %d frames\n", statistics.nFrames);
+        printf("Average frame size: %.2f bytes\n", (float) statistics.bytes_read / statistics.nFrames);
+        
+        printf("\nData transfer rate: %.2f bits per second\n", (float) statistics.bytes_read * 8.0 / timeTaken);
+        printf("Theoretical communication efficiency: %.2f\n", theoreticalEfficiency);
+        printf("Targeted efficiency: %.2f\n", 
+            ((float) (FILE_SIZE * 8.0) / timeTaken) / (float) connectionParameters.baudRate);
+    } 
     else {
-        printf("\nNumber of good frames sent: %d frames\n", statistics.nFrames);
-
-        printf("\nTime taken to send and receive confirmation of receival of control frames: %f seconds\n", statistics.time_send_control);
-
-        printf("\nTime taken to send and receive confirmation of receival of data frames: %f seconds\n", statistics.time_send_data);
-
-        printf("\nAverage time taken to send a frame: %f seconds\n", (statistics.time_send_data + statistics.time_send_control) / statistics.nFrames);
+        // Transmitter statistics
+        printf("\n-- Transmitter Statistics --\n");
+        
+        printf("Number of frames successfully sent: %d frames\n", statistics.nFrames);
+        printf("Total time for sending control frames (with acknowledgment): %.2f seconds\n", statistics.time_send_control);
+        printf("Total time for sending data frames (with acknowledgment): %.2f seconds\n", statistics.time_send_data);
+        
+        printf("\nAverage time per frame sent: %.2f seconds\n", 
+            (statistics.time_send_data + statistics.time_send_control) / statistics.nFrames);
     }
+    printf("\n##################################################\n");
 
-    printf("\n============================\n");
 }
+
 
 int llclose(int showStatistics)
 {
@@ -674,7 +649,7 @@ int llclose(int showStatistics)
 
         gettimeofday(&temp_start, NULL);
 
-        if(receivePacketRetransmission(A_RECV, C_DISC, A_SEND, C_DISC))
+        if(receivePacketWithRetransmission(ADDR_RECEIVER, CTRL_DISCONNECT, ADDR_SENDER, CTRL_DISCONNECT))
             return disconnectFD();
 
         statistics.nFrames++;
@@ -683,22 +658,22 @@ int llclose(int showStatistics)
         statistics.time_send_control += get_time_difference(temp_start, temp_end);
         statistics.nFrames++;
 
-        if(send_packet_command(A_RECV, C_UA)) return disconnectFD();
+        if(sendCommandPacket(ADDR_RECEIVER, CTRL_UA)) return disconnectFD();
         printf("Disconnected\n");
     }
     if(connectionParameters.role == LlRx)
     {
-        if(receivePacket(A_SEND, C_DISC)) return disconnectFD();
-        statistics.nFrames++;
+        if(receivePacket(ADDR_SENDER, CTRL_DISCONNECT)) 
+            return disconnectFD();
         statistics.bytes_read += FRAME_SIZE;
+        statistics.nFrames++;
 
-        if(receivePacketRetransmission(A_RECV, C_UA, A_RECV, C_DISC)) return disconnectFD();
-        statistics.nFrames++;           // Retirar este linha se se mudar em cima para send_packet_command
-        statistics.bytes_read += FRAME_SIZE;   // Retirar este linha se se mudar em cima para send_packet_command
+        if(receivePacketWithRetransmission(ADDR_RECEIVER, CTRL_UA, ADDR_RECEIVER, CTRL_DISCONNECT)) 
+            return disconnectFD();
+        statistics.bytes_read += FRAME_SIZE;
+        statistics.nFrames++;
 
         printf("Disconnected\n");
-        // if(send_packet_command(A_RECV, C_DISC)) return disconnectFD();
-        
     }
 
     if(showStatistics) printStatistics();
