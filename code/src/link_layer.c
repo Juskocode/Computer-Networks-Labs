@@ -13,6 +13,7 @@
 #include "link_layer.h"
 #include "serial_port.h"  // Include the serial port helper functions
 #include "utils.h"
+#include "state_machine.h"
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -43,27 +44,16 @@
 #define INFO_CTRL_1            0x40
 
 /*ACK's and NACK's*/
-#define RR0         0xAA
-#define RR1         0xAB
-#define REJ0        0x54
-#define REJ1        0x55
+#define RR0                    0xAA
+#define RR1                    0xAB
+#define REJ0                   0x54
+#define REJ1                   0x55
 
 // NOTE: only for report stats
 #define FAKE_BCC1_ERR   0.0             // %
 #define FAKE_BCC2_ERR   0.0             // %
 #define TPROP           0               // ms
 #define FILE_SIZE       10968
-
-/* Enum to represent communication states */
-enum CommState {
-    STATE_START, 
-    STATE_FLAG_RECEIVED,
-    STATE_ADDRESS_RECEIVED,
-    STATE_CONTROL_RECEIVED,
-    STATE_BCC_OK,
-    STATE_DATA,
-    STATE_STOP
-};
 
 LinkLayer connectionParameters;
 Statistics stats = {0, 0, 0, 0, 0.0, 0.0}; // Holds frame count, byte count, and timing data
@@ -154,34 +144,8 @@ int receivePacket(unsigned char expectedAddress, unsigned char expectedControl) 
             perror("Error reading DISC command");
             return -1;
         }
-        if(bytesRead > 0) {
-            switch (currentState) {
-            case STATE_START:
-                if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                break;
-            case STATE_FLAG_RECEIVED:
-                if(byte == FRAME_FLAG) continue;
-                if(byte == expectedAddress) currentState = STATE_ADDRESS_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_ADDRESS_RECEIVED:
-                if(byte == expectedControl) currentState = STATE_CONTROL_RECEIVED;
-                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_CONTROL_RECEIVED:
-                if(byte == (expectedControl ^ expectedAddress)) currentState = STATE_BCC_OK;
-                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_BCC_OK:
-                if(byte == FRAME_FLAG) currentState = STATE_STOP;
-                else currentState = STATE_START;
-                break;
-            default:
-                currentState = STATE_START;
-            }
-        }
+        if(bytesRead > 0) 
+            currentState = processByte(currentState, byte, expectedAddress, expectedControl);
     }
     
     return 0; 
@@ -203,34 +167,8 @@ int receivePacketWithRetransmission(unsigned char expectedAddress, unsigned char
             perror("Error reading UA command");
             return -1;
         }
-        if(bytesRead > 0) {
-            switch (currentState) {
-            case STATE_START:
-                if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                break;
-            case STATE_FLAG_RECEIVED:
-                if(byte == FRAME_FLAG) continue;
-                if(byte == expectedAddress) currentState = STATE_ADDRESS_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_ADDRESS_RECEIVED:
-                if(byte == expectedControl) currentState = STATE_CONTROL_RECEIVED;
-                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_CONTROL_RECEIVED:
-                if(byte == (expectedControl ^ expectedAddress)) currentState = STATE_BCC_OK;
-                else if(byte == FRAME_FLAG) currentState = STATE_FLAG_RECEIVED;
-                else currentState = STATE_START;
-                break;
-            case STATE_BCC_OK:
-                if(byte == FRAME_FLAG) currentState = STATE_STOP;
-                else currentState = STATE_START;
-                break;
-            default:
-                currentState = STATE_START;
-            }
-        }
+        if(bytesRead > 0) 
+            currentState = processByte(currentState, byte, expectedAddress, expectedControl);
 
         if(currentState == STATE_STOP) {
             alarmDisable();
@@ -328,20 +266,20 @@ int llwrite(const unsigned char *buffer, int bufSize) {
     frame[1] = ADDR_SENDER;
     frame[2] = (sendSeqNum) ? INFO_CTRL_1 : INFO_CTRL_0;
     frame[3] = frame[1] ^ frame[2];
-    memcpy(frame + 4, stuffedBuffer, stuffedSize);
+    memcpy(frame + FRAME_SIZE - 1, stuffedBuffer, stuffedSize);
 
     unsigned char bcc2 = 0x00;
     for(size_t i = 0; i < bufSize; i++) bcc2 ^= buffer[i];
-    frame[stuffedSize + 4] = bcc2;
+    frame[stuffedSize + FRAME_SIZE - 1] = bcc2;
 
     if(bcc2 == FRAME_FLAG) {
-        frame[stuffedSize + 4] = FRAME_ESCAPE;
+        frame[stuffedSize + FRAME_SIZE - 1] = FRAME_ESCAPE;
         stuffedSize++;
-        frame[stuffedSize + 4] = FRAME_ESCAPED_FLAG;
-        frame = realloc(frame, stuffedSize + 6);
-        frame[stuffedSize + 5] = FRAME_FLAG;
+        frame[stuffedSize + FRAME_SIZE - 1] = FRAME_ESCAPED_FLAG;
+        frame = realloc(frame, stuffedSize + FRAME_SIZE + 1);
+        frame[stuffedSize + FRAME_SIZE] = FRAME_FLAG;
     } else {
-        frame[stuffedSize + 5] = FRAME_FLAG;
+        frame[stuffedSize + FRAME_SIZE] = FRAME_FLAG;
     }
 
     enum CommState currentState = STATE_START;
@@ -350,7 +288,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
     struct timeval start;
     gettimeofday(&start, NULL);
 
-    if(write(fd, frame, (stuffedSize + 6)) < 0) {
+    if(write(fd, frame, (stuffedSize + FRAME_SIZE + 1)) < 0) {
         free(frame);
         perror("Error writing send command");
         return -1;
@@ -424,7 +362,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
         if(isAlarmEnabled) {
             isAlarmEnabled = FALSE;
             if (alarmRetryCount <= connectionParameters.nRetransmissions) {
-                if(write(fd, frame, (stuffedSize + 6)) < 0) {
+                if(write(fd, frame, (stuffedSize + FRAME_SIZE + 1)) < 0) {
                     perror("Error writing send command");
                     return -1;
                 }
