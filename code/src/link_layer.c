@@ -283,6 +283,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
                 isAlarmEnabled = TRUE;
                 alarmRetryCount = 0;
                 printf(COLOR_NEGATIVE "Received reject; Retrying.\n"COLOR_RESET);
+                fflush(stdout);
             } else if (receivedControl == RR0 || receivedControl == RR1) {
                 struct timeval end;
                 gettimeofday(&end, NULL);
@@ -422,7 +423,6 @@ int llread(unsigned char *packet) {
 
 void printStatistics() {
     printf(COLOR_HEADER_BG COLOR_BLACK"\n############ Communication Statistics ############\n" COLOR_RESET);
-
     struct timeval end;
     gettimeofday(&end, NULL); 
 
