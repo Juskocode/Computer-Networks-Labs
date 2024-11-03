@@ -11,21 +11,22 @@
 
 #define MAX_FILE_NAME_LENGTH 50
 #define PROGRESS_BAR_LENGTH 50
+#define HEADER_SIZE 4
 
-enum state {
-    RECV_START,
-    RECV_CONT,
-    RECV_END
+enum ReceiveState {
+    RECEIVE_STATE_START,
+    RECEIVE_STATE_CONTINUE,
+    RECEIVE_STATE_END
 };
 
 typedef struct {
     size_t file_size;
     char * file_name;
     size_t bytesRead;
-} FileProps;
+} FileMetaData;
 
-enum state stateReceive = RECV_START;
-FileProps fileProps = {0, "", 0};
+enum ReceiveState currentReceiveState = RECEIVE_STATE_START;
+FileMetaData fileMetaData = {0, "", 0};
 
 
 void showProgress(size_t bytesRead, size_t fileSize, double timeElapsed, unsigned char role) {
@@ -49,30 +50,33 @@ void showProgress(size_t bytesRead, size_t fileSize, double timeElapsed, unsigne
 }
 
 int sendPacketData(size_t nBytes, unsigned char *data) {
-    if (data == NULL) return -1;
+    if (data == NULL) 
+        return -1;
     
-    unsigned char *packet = (unsigned char *) malloc(nBytes + 3);
-    if (packet == NULL) return -1;
+    unsigned char *packet = (unsigned char *) malloc(nBytes + HEADER_SIZE - 1);
+    if (packet == NULL) 
+        return -1;
     
     packet[0] = DATA_PACKET;
     packet[1] = nBytes >> 8;
     packet[2] = nBytes & 0xFF;
-    memcpy(packet + 3, data, nBytes);
+    memcpy(packet + HEADER_SIZE - 1, data, nBytes);
 
-    int result = llwrite(packet, nBytes + 3);
+    int result = llwrite(packet, nBytes + HEADER_SIZE - 1);
 
     free(packet);
     return result;
 }
 
 int sendPacketControl(unsigned char C, const char * filename, size_t file_size) {
-    if (filename == NULL) return -1;
+    if (filename == NULL) 
+        return -1;
     
     unsigned char L1 = 0;
+    unsigned char L2 = (unsigned char) strlen(filename);
     unsigned char * V1 = size_t_to_bytes(file_size, &L1);
     if (V1 == NULL) return -1;
 
-    unsigned char L2 = (unsigned char) strlen(filename);
     unsigned char *packet = (unsigned char *) malloc(FRAME_SIZE + L1 + L2);
     if (packet == NULL) {
         free(V1);
@@ -84,11 +88,14 @@ int sendPacketControl(unsigned char C, const char * filename, size_t file_size) 
     packet[indx++] = FILE_SIZE_INDEX;
     packet[indx++] = L1;
     memcpy(packet + indx, V1, L1); indx += L1;
+    
     packet[indx++] = FILE_NAME_INDEX;
     packet[indx++] = L2;
-    memcpy(packet + indx, filename, L2); indx += L2;  
+    memcpy(packet + indx, filename, L2); indx += L2;   
 
     free(V1);
+
+    //send packet
     int res = llwrite(packet, (int) indx);
 
     free(packet);
@@ -100,7 +107,7 @@ unsigned char * readPacketData(unsigned char *buff, size_t *newSize) {
     if (buff[0] != DATA_PACKET) return NULL;
 
     *newSize = buff[1] * 256 + buff[2];
-    return buff + 3;
+    return buff + HEADER_SIZE - 1;
 }
 
 int readPacketControl(unsigned char * buff) {
@@ -110,8 +117,8 @@ int readPacketControl(unsigned char * buff) {
     char * file_name = malloc(MAX_FILE_NAME_LENGTH);
     if (file_name == NULL) return -1;
 
-    if (buff[indx] == CONTROL_START) stateReceive = RECV_CONT;
-    else if (buff[indx] == CONTROL_END) stateReceive = RECV_END;
+    if (buff[indx] == CONTROL_START) currentReceiveState = RECEIVE_STATE_CONTINUE;
+    else if (buff[indx] == CONTROL_END) currentReceiveState = RECEIVE_STATE_END;
     else {
         free(file_name);
         return -1;
@@ -132,15 +139,15 @@ int readPacketControl(unsigned char * buff) {
     file_name[L2] = '\0';
 
     if (buff[0] == CONTROL_START) {
-        fileProps.file_size = file_size;
-        fileProps.file_name = file_name;
+        fileMetaData.file_size = file_size;
+        fileMetaData.file_name = file_name;
         printf("[INFO] Started receiving file: '%s'\n", file_name);
     }
     if (buff[0] == CONTROL_END) {
-        if (fileProps.file_size != fileProps.bytesRead) {
+        if (fileMetaData.file_size != fileMetaData.bytesRead) {
             perror("Number of bytes read doesn't match size of file\n");
         }
-        if (strcmp(fileProps.file_name, file_name)) {
+        if (strcmp(fileMetaData.file_name, file_name)) {
             perror("Names of file given in the start and end packets don't match\n");
         }
         printf("[INFO] Finished receiving file: '%s'\n", file_name);
@@ -222,7 +229,7 @@ void applicationLayerReceiver(const char *filename) {
     struct timeval start, current;
     gettimeofday(&start, NULL);
 
-    while (stateReceive != RECV_END) {
+    while (currentReceiveState != RECEIVE_STATE_END) {
         bytes_readed = llread(buf);
         if (bytes_readed == -1) {
             perror("Link layer error: Failed to read from the link.");
@@ -247,11 +254,11 @@ void applicationLayerReceiver(const char *filename) {
                 return;
             }
             fwrite(packet, 1, bytes_readed, file);
-            fileProps.bytesRead += bytes_readed;
+            fileMetaData.bytesRead += bytes_readed;
 
             gettimeofday(&current, NULL);
             double timeElapsed = get_time_difference(start, current);
-            showProgress(fileProps.bytesRead, fileProps.file_size, timeElapsed, LlRx);
+            showProgress(fileMetaData.bytesRead, fileMetaData.file_size, timeElapsed, LlRx);
         }
     }
 
