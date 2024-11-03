@@ -150,6 +150,117 @@ int readPacketControl(unsigned char * buff) {
     return 0;
 }
 
+// Transmitter function
+void applicationLayerTransmitter(const char *filename) {
+    size_t bytesRead = 0;
+    unsigned char *buffer = (unsigned char *)malloc(MAX_PAYLOAD_SIZE + 20);
+    if (buffer == NULL) {
+        perror("Memory allocation error at buffer creation.");
+        return;
+    }
+
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        perror("File error: Unable to open the file for reading.");
+        free(buffer);  // Corrected: Ensure buffer is freed
+        return;
+    }
+
+    fseek(file, 0, SEEK_END);
+    size_t file_size = ftell(file);
+    rewind(file);
+
+    if (sendPacketControl(CONTROL_START, filename, file_size) == -1) {
+        perror("Transmission error: Failed to send the START packet control.");
+        fclose(file);
+        free(buffer);  // Corrected: Ensure buffer is freed
+        return;
+    }
+
+    struct timeval start, current;
+    gettimeofday(&start, NULL);
+
+    while ((bytesRead = fread(buffer, 1, MAX_PAYLOAD_SIZE, file)) > 0) {
+        size_t sended_bytes = sendPacketData(bytesRead, buffer);
+        if (sended_bytes == -1) {
+            perror("Transmission error: Failed to send the DATA packet control.");
+            fclose(file);
+            free(buffer);  // Corrected: Ensure buffer is freed
+            return;
+        }
+
+        gettimeofday(&current, NULL);
+        double timeElapsed = get_time_difference(start, current);
+        showProgress(ftell(file), file_size, timeElapsed, LlTx);
+    }
+
+    if (sendPacketControl(CONTROL_END, filename, file_size) == -1) {
+        perror("Transmission error: Failed to send the END packet control.");
+    }
+
+    fclose(file);
+    free(buffer);  // Corrected: Ensure buffer is freed
+    printf("\n");
+}
+
+// Receiver function
+void applicationLayerReceiver(const char *filename) {
+    unsigned char *buf = malloc(MAX_PAYLOAD_SIZE + 20);
+    if (buf == NULL) {
+        perror("Initialization error: Buffer allocation failed.");
+        return;
+    }
+
+    FILE *file = fopen(filename, "wb");
+    if (file == NULL) {
+        perror("File error: Unable to open the file for writing.");
+        free(buf);  // Corrected: Ensure buffer is freed
+        return;
+    }
+
+    size_t bytes_readed = 0;
+    struct timeval start, current;
+    gettimeofday(&start, NULL);
+
+    while (stateReceive != RECV_END) {
+        bytes_readed = llread(buf);
+        if (bytes_readed == -1) {
+            perror("Link layer error: Failed to read from the link.");
+            fclose(file);
+            free(buf);  // Corrected: Ensure buffer is freed
+            return;
+        }
+
+        if (buf[0] == CONTROL_START || buf[0] == CONTROL_END) {
+            if (readPacketControl(buf) == -1) {
+                perror("Packet error: Failed to read control packet.");
+                fclose(file);
+                free(buf);  // Corrected: Ensure buffer is freed
+                return;
+            }
+        } else if (buf[0] == DATA_PACKET) {
+            unsigned char *packet = readPacketData(buf, &bytes_readed);
+            if (packet == NULL) {
+                perror("Packet error: Failed to read data packet.");
+                fclose(file);
+                free(buf);  // Corrected: Ensure buffer is freed
+                return;
+            }
+            fwrite(packet, 1, bytes_readed, file);
+            fileProps.bytesRead += bytes_readed;
+
+            gettimeofday(&current, NULL);
+            double timeElapsed = get_time_difference(start, current);
+            showProgress(fileProps.bytesRead, fileProps.file_size, timeElapsed, LlRx);
+        }
+    }
+
+    fclose(file);
+    free(buf);  // Corrected: Ensure buffer is freed
+    printf("\n");
+}
+
+// Main application layer function
 void applicationLayer(const char *serialPort, const char *role, int baudRate, int nTries, int timeout, const char *filename) {
     if (serialPort == NULL || role == NULL || filename == NULL) {
         perror("Initialization error: One or more required arguments are NULL.");
@@ -160,10 +271,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate, in
         printf("The length of the given file name is greater than what is supported: %d characters\n", MAX_FILE_NAME_LENGTH);
         return;
     }
-    
+
     LinkLayer connectionParametersApp;
     strncpy(connectionParametersApp.serialPort, serialPort, sizeof(connectionParametersApp.serialPort) - 1);
-    connectionParametersApp.role = strcmp(role, "tx") ? LlRx : LlTx;
+    connectionParametersApp.role = strcmp(role, "tx") == 0 ? LlTx : LlRx;
     connectionParametersApp.baudRate = baudRate;
     connectionParametersApp.nRetransmissions = nTries;
     connectionParametersApp.timeout = timeout;
@@ -173,127 +284,14 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate, in
         llclose(FALSE);
         return;
     }
-    
+
     if (connectionParametersApp.role == LlTx) {
-        size_t bytesRead = 0;
-        unsigned char *buffer = (unsigned char *) malloc(MAX_PAYLOAD_SIZE + 20);
-        if (buffer == NULL) {
-            perror("Memory allocation error at buffer creation.");
-            llclose(FALSE);
-            return;
-        }
-
-        FILE* file = fopen(filename, "rb");
-        if (file == NULL) {
-            perror("File error: Unable to open the file for reading.");
-            fclose(file);
-            free(buffer);
-            llclose(FALSE);
-            return;
-        }
-
-        fseek(file, 0, SEEK_END);
-        size_t file_size = ftell(file);
-        rewind(file);
-
-        if (sendPacketControl(CONTROL_START, filename, file_size) == -1) {
-            perror("Transmission error: Failed to send the START packet control.");
-            fclose(file);
-            llclose(FALSE);
-            return;
-        }
-
-        struct timeval start, current;
-        gettimeofday(&start, NULL);
-
-        while ((bytesRead = fread(buffer, 1, MAX_PAYLOAD_SIZE, file)) > 0) {
-            size_t sended_bytes = sendPacketData(bytesRead, buffer);
-            
-            if (sended_bytes == -1) {
-                perror("Transmission error: Failed to send the DATA packet control.");
-                fclose(file);
-                llclose(FALSE);
-                return;
-            }
-
-            gettimeofday(&current, NULL);
-            double timeElapsed = get_time_difference(start, current);
-            showProgress(ftell(file), file_size, timeElapsed, LlTx);
-        }
-
-        if (sendPacketControl(CONTROL_END, filename, file_size) == -1) {
-            perror("Transmission error: Failed to send the END packet control.");
-            fclose(file);
-            llclose(FALSE);
-            return;
-        }
-
-        fclose(file);
-        printf("\n");
-    } 
-    
-    if (connectionParametersApp.role == LlRx) {
-        unsigned char * buf = malloc(MAX_PAYLOAD_SIZE + 20);
-        unsigned char * packet = malloc(MAX_PAYLOAD_SIZE + 20);
-        if (buf == NULL || packet == NULL) {
-            perror("Initialization error: One or more buffers pointers are NULL.");
-            llclose(FALSE);
-            return;
-        }
-
-        FILE *file = fopen(filename, "wb");
-        
-        if (file == NULL) {
-            perror("File error: Unable to open the file for writing.");
-            fclose(file);
-            llclose(FALSE);
-            return;
-        }
-
-        size_t bytes_readed = 0;
-        struct timeval start, current;
-        gettimeofday(&start, NULL);
-
-        while (stateReceive != RECV_END) {
-            bytes_readed = llread(buf);
-
-            if (bytes_readed == -1) {
-                perror("Link layer error: Failed to read from the link.");
-                fclose(file);
-                llclose(FALSE);
-                return;
-            }
-            
-            if (buf[0] == CONTROL_START || buf[0] == CONTROL_END) {
-                if (readPacketControl(buf) == -1) {
-                    perror("Packet error: Failed to read control packet.");
-                    fclose(file);
-                    llclose(FALSE);
-                    return;
-                }
-            } else if (buf[0] == DATA_PACKET) {
-                packet = readPacketData(buf, &bytes_readed);
-                if (packet == NULL) {
-                    perror("Packet error: Failed to read data packet.");
-                    fclose(file);
-                    llclose(FALSE);
-                    return;
-                }
-                fwrite(packet, 1, bytes_readed, file);
-                fileProps.bytesRead += bytes_readed;
-
-                gettimeofday(&current, NULL);
-                double timeElapsed = get_time_difference(start, current);
-                showProgress(fileProps.bytesRead, fileProps.file_size, timeElapsed, LlRx);
-            }
-        }
-
-        fclose(file);
-        printf("\n");
+        applicationLayerTransmitter(filename);
+    } else if (connectionParametersApp.role == LlRx) {
+        applicationLayerReceiver(filename);
     }
 
     if (llclose(TRUE) == -1) {
         perror("Link layer error: Failed to close the connection.");
-        return;
     }
 }
