@@ -182,7 +182,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
     int stuffedSize;
     const unsigned char *stuffedBuffer = byteStuffing(buffer, bufSize, &stuffedSize);
     if(stuffedBuffer == NULL) return -1;
-    printf("Bytes sent: %d\n", stuffedSize);
+    printf("Bytes sent:"COLOR_POSITIVE"[%d]"COLOR_RESET"\n", stuffedSize);
     
     unsigned char *frame = (unsigned char *) malloc(stuffedSize + 6);
     if(frame == NULL) {
@@ -282,7 +282,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
             if (receivedControl == REJ0 || receivedControl == REJ1) {
                 isAlarmEnabled = TRUE;
                 alarmRetryCount = 0;
-                printf("Received reject; Retrying.\n");
+                printf(COLOR_NEGATIVE "Received reject; Retrying.\n" COLOR_RESET);
             } else if (receivedControl == RR0 || receivedControl == RR1) {
                 struct timeval end;
                 gettimeofday(&end, NULL);
@@ -399,12 +399,12 @@ int llread(unsigned char *packet) {
                         if ((recvSeqNum == 0 && controlByteReceived == INFO_CTRL_0) || 
                             (recvSeqNum == 1 && controlByteReceived == INFO_CTRL_1)) {
                             recvSeqNum = 1 - recvSeqNum;
-                            printf("Bytes received: %d\n", processedSize);
+                            printf("Bytes received:" COLOR_POSITIVE "[%d]" COLOR_RESET "\n", processedSize);
                             stats.bytes_read += processedSize + FRAME_SIZE + 1;
                             stats.nFrames++;
                             return processedSize;
                         }
-                        printf("Received duplicate packet\n");
+                        printf(COLOR_STAT "Received duplicate packet\n" COLOR_RESET);
                     } else {
                         packet[packetIndex++] = byte;
                     }
@@ -421,49 +421,61 @@ int llread(unsigned char *packet) {
 
 
 void printStatistics() {
-    printf("\n############ Communication Statistics ############\n");
-
+    printf(COLOR_HEADER_BG COLOR_BLACK"\n############ Communication Statistics ############\n" COLOR_RESET);
 
     struct timeval end;
     gettimeofday(&end, NULL);
-    
+
     // Calculate time taken for file transfer
     float timeTaken = get_time_difference(stats.start, end);
-    printf("Total time taken for file transfer: %.2f seconds\n", timeTaken);
+    printf(COLOR_TEXT "Total time taken for file transfer: " COLOR_STAT "%.2f seconds\n" COLOR_RESET, timeTaken);
 
     if (connectionParameters.role == LlRx) {
         // Receiver stats
-        printf("\n-- Receiver Statistics --\n");
+        printf(COLOR_NEGATIVE_BG COLOR_BLACK"\n--" COLOR_POSITIVE_BG COLOR_BLACK"Receiver Statistics" COLOR_NEGATIVE_BG COLOR_BLACK "--\n" COLOR_RESET);
+
         
         // Calculate theoretical efficiency
         float a = ((float) TPROP / 1000.0) / ((float) MAX_PAYLOAD_SIZE * 8.0 / connectionParameters.baudRate);
         float expectedFER = FAKE_BCC1_ERR / 100.0 + ((100.0 - FAKE_BCC1_ERR) / 100.0) * (FAKE_BCC2_ERR / 100.0);
         float theoreticalEfficiency = (1.0 - expectedFER) / (1 + 2 * a);
+
+        printf(COLOR_TEXT "Total bytes received (post-destuffing): " COLOR_STAT "%lu bytes\n" COLOR_RESET, stats.bytes_read);
+        printf(COLOR_TEXT "Number of valid frames received: " COLOR_STAT "%d frames\n" COLOR_RESET, stats.nFrames);
+        printf(COLOR_TEXT "Average frame size: " COLOR_STAT "%.2f bytes\n" COLOR_RESET, (float) stats.bytes_read / stats.nFrames);
         
-        printf("Total bytes received (post-destuffing): %lu bytes\n", stats.bytes_read);
-        printf("Number of valid frames received: %d frames\n", stats.nFrames);
-        printf("Average frame size: %.2f bytes\n", (float) stats.bytes_read / stats.nFrames);
+        printf(COLOR_TEXT "\nData transfer rate: " COLOR_STAT "%.2f bits per second\n" COLOR_RESET, 
+               (float) stats.bytes_read * 8.0 / timeTaken);
         
-        printf("\nData transfer rate: %.2f bits per second\n", (float) stats.bytes_read * 8.0 / timeTaken);
-        printf("Theoretical communication efficiency: %.2f\n", theoreticalEfficiency);
-        printf("Targeted efficiency: %.2f\n", 
-            ((float) (FILE_SIZE * 8.0) / timeTaken) / (float) connectionParameters.baudRate);
-    } 
+        // Conditional color for efficiency based on its value
+        if (theoreticalEfficiency > 0.75) {
+            printf(COLOR_TEXT "Theoretical communication efficiency: " COLOR_POSITIVE "%.2f\n" COLOR_RESET, theoreticalEfficiency);
+        } else {
+            printf(COLOR_TEXT "Theoretical communication efficiency: " COLOR_NEGATIVE "%.2f\n" COLOR_RESET, theoreticalEfficiency);
+        }
+        
+        float targetedEfficiency = ((float) (FILE_SIZE * 8.0)) / timeTaken / (float) connectionParameters.baudRate;
+        if (targetedEfficiency > 0.75) {
+            printf(COLOR_TEXT "Targeted efficiency: " COLOR_POSITIVE "%.2f\n" COLOR_RESET, targetedEfficiency);
+        } else if (0.75 >= targetedEfficiency && targetedEfficiency >= 0.50) {
+            printf(COLOR_TEXT "Targeted efficiency: " COLOR_STAT "%.2f\n" COLOR_RESET, targetedEfficiency);
+        } else {
+            printf(COLOR_TEXT "Targeted efficiency: " COLOR_NEGATIVE "%.2f\n" COLOR_RESET, targetedEfficiency);
+        }
+    }
     else {
         // Transmitter stats
-        printf("\n-- Transmitter Statistics --\n");
+        printf(COLOR_NEGATIVE_BG COLOR_BLACK"\n--" COLOR_POSITIVE_BG COLOR_BLACK"Transmitter Statistics" COLOR_NEGATIVE_BG COLOR_BLACK "--\n" COLOR_RESET);
         
-        printf("Number of frames successfully sent: %d frames\n", stats.nFrames);
-        printf("Total time for sending control frames (with acknowledgment): %.2f seconds\n", stats.time_send_control);
-        printf("Total time for sending data frames (with acknowledgment): %.2f seconds\n", stats.time_send_data);
+        printf(COLOR_TEXT "Number of frames successfully sent: " COLOR_STAT "%d frames\n" COLOR_RESET, stats.nFrames);
+        printf(COLOR_TEXT "Total time for sending control frames (with acknowledgment): " COLOR_STAT "%.2f seconds\n" COLOR_RESET, stats.time_send_control);
+        printf(COLOR_TEXT "Total time for sending data frames (with acknowledgment): " COLOR_STAT "%.2f seconds\n" COLOR_RESET, stats.time_send_data);
         
-        printf("\nAverage time per frame sent: %.2f seconds\n", 
-            (stats.time_send_data + stats.time_send_control) / stats.nFrames);
+        printf(COLOR_TEXT "\nAverage time per frame sent: " COLOR_STAT "%.2f seconds\n" COLOR_RESET, 
+               (stats.time_send_data + stats.time_send_control) / stats.nFrames);
     }
-    printf("\n##################################################\n");
-
+    printf(COLOR_HEADER_BG COLOR_BLACK "\n##################################################\n" COLOR_RESET);
 }
-
 
 int llclose(int showStatistics)
 {
