@@ -182,7 +182,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
     int stuffedSize;
     const unsigned char *stuffedBuffer = byteStuffing(buffer, bufSize, &stuffedSize);
     if(stuffedBuffer == NULL) return -1;
-    printf("Bytes sent:"COLOR_POSITIVE"[%d]"COLOR_RESET"\n", stuffedSize);
+    printf("Bytes sent:" COLOR_POSITIVE "[%d]" COLOR_RESET"\n", stuffedSize);
     
     unsigned char *frame = (unsigned char *) malloc(stuffedSize + 6);
     if(frame == NULL) {
@@ -282,7 +282,7 @@ int llwrite(const unsigned char *buffer, int bufSize) {
             if (receivedControl == REJ0 || receivedControl == REJ1) {
                 isAlarmEnabled = TRUE;
                 alarmRetryCount = 0;
-                printf(COLOR_NEGATIVE "Received reject; Retrying.\n" COLOR_RESET);
+                printf(COLOR_NEGATIVE "Received reject; Retrying.\n"COLOR_RESET);
             } else if (receivedControl == RR0 || receivedControl == RR1) {
                 struct timeval end;
                 gettimeofday(&end, NULL);
@@ -424,7 +424,7 @@ void printStatistics() {
     printf(COLOR_HEADER_BG COLOR_BLACK"\n############ Communication Statistics ############\n" COLOR_RESET);
 
     struct timeval end;
-    gettimeofday(&end, NULL);
+    gettimeofday(&end, NULL); 
 
     // Calculate time taken for file transfer
     float timeTaken = get_time_difference(stats.start, end);
