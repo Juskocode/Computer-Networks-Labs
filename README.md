@@ -1,5 +1,5 @@
 # Computer-Networks-Labs
-Lab classes and project of Computer-network class
+Lab classes and Data Link protocol
 
 INSTRUCTIONS FOR SERIAL PORT PROTOCOL
 =====================================
